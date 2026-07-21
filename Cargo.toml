@@ -1,0 +1,35 @@
+[package]
+name = "redacto"
+version = "0.1.0"
+edition = "2024"
+description = "Redacts secrets and sanitizes infra identifiers from log/output files in place — safely, repeatedly, with validity-gated writes."
+license = "Apache-2.0"
+repository = "https://github.com/asaphe/redacto"
+readme = "README.md"
+keywords = ["security", "secrets", "redaction", "logs", "cli"]
+categories = ["command-line-utilities"]
+
+[[bin]]
+name = "redacto"
+path = "src/main.rs"
+
+[lib]
+name = "redacto"
+path = "src/lib.rs"
+
+[dependencies]
+regex = "1"
+clap = { version = "4", features = ["derive"] }
+walkdir = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+globset = "0.4"
+
+[dev-dependencies]
+tempfile = "3"
+
+[profile.release]
+lto = true
+strip = true
