@@ -88,13 +88,14 @@ fn custom_regexes_to_patterns(regexes: Vec<regex::Regex>) -> Vec<Pattern> {
         .collect()
 }
 
-// Returns true if anything means a cron/CI caller should treat this run as not fully clean: a validation failure, an unsafe line left untouched, or a root path that couldn't be scanned at all.
+// Returns true if anything means a cron/CI caller should treat this run as not fully clean: a validation failure, an unsafe line left untouched, an unresolved PEM orphan/abort, or a root path that couldn't be scanned at all.
 fn report(scan_report: &ScanReport, write_mode: bool) -> bool {
     let mut redacted_files = 0usize;
     let mut total_redactions = 0usize;
     let mut validation_failures = 0usize;
     let mut possibly_live_skips = 0usize;
     let mut unsafe_line_files = 0usize;
+    let mut pem_concern_files = 0usize;
 
     for r in &scan_report.results {
         match &r.outcome {
@@ -113,6 +114,9 @@ fn report(scan_report: &ScanReport, write_mode: bool) -> bool {
                     summary.total_redactions(),
                     summary.pattern_counts
                 );
+                if summary.has_pem_concern() {
+                    pem_concern_files += 1;
+                }
                 if !summary.pem_aborted_lines.is_empty() {
                     println!(
                         "  ! private-key structural ambiguity on line(s) {:?} — left untouched, needs manual review",
@@ -158,8 +162,43 @@ fn report(scan_report: &ScanReport, write_mode: bool) -> bool {
     }
 
     println!(
-        "\nredacto: {redacted_files} file(s) with matches, {total_redactions} total redaction(s), {validation_failures} validation failure(s), {unsafe_line_files} file(s) with unsafe lines, write_mode={write_mode}"
+        "\nredacto: {redacted_files} file(s) with matches, {total_redactions} total redaction(s), {validation_failures} validation failure(s), {unsafe_line_files} file(s) with unsafe lines, {pem_concern_files} file(s) with unresolved PEM markers, write_mode={write_mode}"
     );
 
-    validation_failures > 0 || unsafe_line_files > 0 || !scan_report.root_errors.is_empty()
+    validation_failures > 0
+        || unsafe_line_files > 0
+        || pem_concern_files > 0
+        || !scan_report.root_errors.is_empty()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use redacto::engine::redact::RedactSummary;
+    use std::path::PathBuf;
+
+    #[test]
+    fn unresolved_pem_orphan_makes_the_run_trouble_even_with_zero_redactions() {
+        let summary = RedactSummary {
+            pem_orphan_begin: 1,
+            ..Default::default()
+        };
+        assert_eq!(summary.total_redactions(), 0);
+        let scan_report = ScanReport {
+            results: vec![redacto::engine::scan::ScanResult {
+                path: PathBuf::from("leak.log"),
+                outcome: FileOutcome::Redacted {
+                    summary,
+                    written: false,
+                    unsafe_lines: Vec::new(),
+                },
+            }],
+            root_errors: Vec::new(),
+        };
+
+        assert!(
+            report(&scan_report, false),
+            "a file with an unresolved PEM orphan and nothing else must still trip the exit-code trouble signal, so a CI/cron caller relying on the exit code actually sees it"
+        );
+    }
 }
