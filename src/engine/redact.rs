@@ -17,6 +17,11 @@ impl RedactSummary {
         self.pattern_counts.values().sum::<usize>() + self.pem_pairs_redacted
     }
 
+    // True when a PEM BEGIN/END marker couldn't be safely paired and redacted — key material may still be sitting in the file even though total_redactions() is 0 or unrelated to this. Single source of truth for "does this file still need a human", shared by the Clean-gate, the watermark decision, and the exit-code trouble calc so the three can't silently drift out of agreement on the same input.
+    pub fn has_pem_concern(&self) -> bool {
+        self.pem_orphan_begin > 0 || self.pem_orphan_end > 0 || !self.pem_aborted_lines.is_empty()
+    }
+
     // Adds another summary's counts into this one instead of overwriting, so repeated patterns (e.g. a custom rule reused across lines) accumulate rather than undercounting.
     fn merge(&mut self, other: RedactSummary) {
         for (id, count) in other.pattern_counts {
@@ -74,6 +79,8 @@ pub fn redact_jsonl(
 
         let (redacted, line_summary) = redact_text(line, patterns, include_pem);
         if line_summary.total_redactions() == 0 {
+            // Still merge: a line with an unpaired PEM orphan/abort has zero *successful* redactions but must not lose that signal — otherwise the exact same silent-drop this fix targets at the whole-file level reappears per-line for JSONL.
+            summary.merge(line_summary);
             new_lines.push((*line).to_string());
             continue;
         }
@@ -135,6 +142,21 @@ mod tests {
         let (out, summary) = redact_text(text, &patterns, true);
         assert_eq!(out, text);
         assert_eq!(summary.total_redactions(), 0);
+    }
+
+    #[test]
+    fn jsonl_line_with_only_an_orphan_pem_marker_still_surfaces_the_concern() {
+        let patterns = all_patterns();
+        // Zero *successful* redactions on this line (nothing to pattern-match, no complete PEM pair) — the exact shape that used to fall through redact_jsonl's early continue and lose the orphan signal entirely.
+        let text = "nothing sensitive\n-----BEGIN PRIVATE KEY----- no end marker here\n";
+        let (_, summary, failed) = redact_jsonl(text, &patterns, true);
+        assert!(failed.is_empty());
+        assert_eq!(summary.total_redactions(), 0);
+        assert!(
+            summary.has_pem_concern(),
+            "an orphan BEGIN on a line with no other redaction must still reach the file-level summary"
+        );
+        assert_eq!(summary.pem_orphan_begin, 1);
     }
 
     #[test]
