@@ -108,6 +108,31 @@ feature-frozen (security patches only). redacto reuses gitleaks' pattern
 definitions as a starting point but owns the parts gitleaks doesn't do:
 in-place rewriting, incremental scanning, and safe multi-line handling.
 
+## Claude Code plugin
+
+This repo doubles as a Claude Code plugin (`.claude-plugin/`) that runs an
+incremental `redacto` sweep as a `SessionStart` hook, over the local Claude
+Code log sinks that tend to accumulate secrets during normal work: session
+transcripts (`~/.claude/projects`), `paste-cache/`, `file-history/`,
+`backups/`, `history.jsonl` (+ dated rotations), and RTK's `tee/` mirror if
+present.
+
+Install:
+
+```sh
+claude plugin marketplace add asaphe/redacto
+claude plugin install redacto@redacto
+```
+
+The plugin only wires the hook — it still calls the `redacto` binary on
+`PATH`, so `cargo install --path .` (or however you install the CLI) is
+still required. The hook is a no-op if `redacto` isn't found.
+
+For a tighter sweep interval than "once per session start," pair this with
+your own cron/launchd invocation of `redacto` against the same paths (see
+[Built-in patterns](#built-in-patterns-v01) above on why this isn't a
+built-in daemon mode).
+
 ## License
 
 Apache-2.0.

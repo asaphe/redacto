@@ -1,0 +1,14 @@
+{
+  "name": "redacto",
+  "description": "Redacts secrets from local Claude Code logs, safely and repeatedly.",
+  "owner": {
+    "name": "asaphe"
+  },
+  "plugins": [
+    {
+      "name": "redacto",
+      "source": "./",
+      "description": "Periodic SessionStart sweep that redacts secrets from your local Claude Code logs using the redacto CLI."
+    }
+  ]
+}
