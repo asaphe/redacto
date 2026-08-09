@@ -80,21 +80,38 @@ custom = [
 
 **Secret values** (mostly adapted from gitleaks' MIT default ruleset):
 AWS access keys, JWTs, private-key/PEM blocks (structural handler, not a
-single regex), Slack bot/user/app tokens, GitLab PATs, GitHub OAuth, personal,
+single regex), Slack tokens (bot, legacy bot, user, app, legacy and legacy
+workspace), GitLab PATs (classic and routable), GitHub OAuth, personal,
 app/refresh and fine-grained tokens, Google API keys, Anthropic API keys, npm
 access tokens, Docker Hub PATs, Stripe access tokens, Slack webhook URLs, plus
 one project-specific ClickHouse Cloud API key rule.
 
-The GitHub, Google, Anthropic, npm, Docker and ClickHouse rules are
-left-anchored and pinned to the vendor's exact body length. That is stricter
-than gitleaks, deliberately: gitleaks reports findings for a human to triage,
-whereas this tool rewrites the file, so a loose bound is a silent unrecoverable
-edit rather than a false positive someone dismisses.
+Every prefixed rule is left-anchored. That is stricter than gitleaks,
+deliberately: gitleaks reports findings for a human to triage, whereas this
+tool rewrites the file, so a loose bound is a silent unrecoverable edit rather
+than a false positive someone dismisses.
 
-The older `gho_`, `glpat-`, `xoxb-` and Stripe rules still carry open-ended
-quantifiers and, for the first three, no left anchor — so they can consume
-adjacent text (a `glpat-` token followed by kebab-case prose takes the whole
-run). Tightening them to the same standard is outstanding.
+Bounds are per-rule, and the exceptions are deliberate rather than oversights.
+Most prefixed rules are pinned to the vendor's exact body length, or to a range
+where that length genuinely varies. Two end in an open quantifier —
+`stripe-access-token` and `jwt` — because a cap would leave the tail of a live
+credential sitting in the file. Rules whose charset admits `-`, `_` or `.`
+(`gitlab-pat`, `gitlab-pat-routable`, `google-api-key`, `anthropic-api-key`,
+`docker-pat`, `github-fine-grained-pat`, `slack-user-token`) rely on an exact
+or ranged length instead, since for them an open quantifier would run into
+adjacent prose rather than into more of the same character class.
+
+Two known gaps, both measured and both with a test pinning the current
+behaviour. `jwt` is open-ended *and* delimiter-permissive — its body admits
+`/`, `-` and `_` — so a JWT appearing as a URL or filesystem path segment takes
+the following segment with it; it is the one rule where the two properties
+combine. And within the secrets set, `aws-access-token` and
+`clickhouse-cloud-api-secret-key` are the only rules ending in `\b`: butted
+directly against an alphanumeric they match nothing at all, so that credential
+survives the pass. Five infrastructure-identifier rules (`aws-resource-id`,
+`aws-instance-id`, `route53-zone-id`, `aws-account-id`, `uuid`) end in `\b`
+too and share that blind spot — worth knowing before relying on
+`--patterns all` to sanitize something for publication.
 
 **Infrastructure identifiers**: AWS resource IDs (vpc/sg/subnet/etc.), EC2
 instance IDs, Route53 zone IDs, AWS account IDs, absolute home paths,
@@ -111,6 +128,16 @@ parsers — not yet safely translated), a `generic-api-key` keyword-context
 heuristic rule, a built-in daemon/watch mode (use an external
 cron/launchd invocation instead — that's what the watermark is for), and
 Homebrew/crates.io publishing automation.
+
+Two gitleaks behaviours are deferred specifically because they lean on an
+entropy gate this crate doesn't have. Its looser `xox[ar]-` workspace-token
+variant matches an 8-char alphanumeric run after the prefix, which without
+entropy scoring would rewrite ordinary text — only the documented five-segment
+shape is matched here. And its 16-entry allowlist of published Google API keys
+is not copied: adding it would commit sixteen real-shaped credential strings to
+a public repository — the exact thing this tool exists to prevent — in exchange
+for not redacting a vendor doc quoted in a log. `KNOWN_BENIGN_VALUES` stays
+AWS-only until that trade looks better.
 
 ## How it's different from just running gitleaks
 
