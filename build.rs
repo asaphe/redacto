@@ -1,30 +1,61 @@
+use std::path::Path;
 use std::process::Command;
 
-// A bare "0.1.0" on every build makes an install predating a fix indistinguishable from a current one — which is how a build missing a shipped security fix stayed live and undetected.
+fn git(dir: &str, args: &[&str]) -> Option<String> {
+    let out = Command::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let text = String::from_utf8(out.stdout).ok()?;
+    let text = text.trim().to_string();
+    (!text.is_empty()).then_some(text)
+}
+
+// `cargo package` records the true revision here; a packaged crate has no .git to probe.
+fn packaged_revision(dir: &str) -> Option<String> {
+    let text = std::fs::read_to_string(Path::new(dir).join(".cargo_vcs_info.json")).ok()?;
+    let sha = text
+        .split("\"sha1\"")
+        .nth(1)?
+        .split('"')
+        .nth(1)?
+        .to_string();
+    (sha.len() >= 12).then(|| sha[..12].to_string())
+}
+
 fn main() {
-    println!("cargo:rerun-if-changed=.git/HEAD");
-    println!("cargo:rerun-if-changed=.git/refs/heads");
+    let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
 
-    let sha = Command::new("git")
-        .args(["rev-parse", "--short=12", "HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .and_then(|o| String::from_utf8(o.stdout).ok())
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    if let Some(sha) = packaged_revision(&dir) {
+        println!("cargo:rerun-if-changed=.cargo_vcs_info.json");
+        println!("cargo:rustc-env=REDACTO_BUILD_REV={sha}");
+        return;
+    }
 
-    // A crates.io or tarball install has no git metadata; "unknown" is honest where a fake SHA is not.
-    let sha = sha.unwrap_or_else(|| "unknown".to_string());
+    // git resolves the NEAREST enclosing repo, so an extracted copy inside an unrelated repo would otherwise be stamped with that repo's revision — a wrong SHA is worse than none.
+    let tracked = git(&dir, &["ls-files", "--error-unmatch", "Cargo.toml"]).is_some();
 
-    let dirty = Command::new("git")
-        .args(["status", "--porcelain"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| !o.stdout.is_empty())
-        .unwrap_or(false);
+    let revision = if tracked {
+        git(&dir, &["rev-parse", "--short=12", "HEAD"])
+    } else {
+        None
+    };
 
-    let suffix = if dirty { "-dirty" } else { "" };
-    println!("cargo:rustc-env=REDACTO_BUILD_REV={sha}{suffix}");
+    match revision {
+        Some(sha) => {
+            // --git-path resolves through a worktree, where .git is a file rather than a directory.
+            for spec in ["HEAD", "logs/HEAD"] {
+                if let Some(path) = git(&dir, &["rev-parse", "--git-path", spec]) {
+                    println!("cargo:rerun-if-changed={path}");
+                }
+            }
+            println!("cargo:rustc-env=REDACTO_BUILD_REV={sha}");
+        }
+        None => println!("cargo:rustc-env=REDACTO_BUILD_REV=unknown"),
+    }
 }
