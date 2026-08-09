@@ -27,17 +27,32 @@ synthetic fixtures:
   original manual secret-scrub effort had explicitly deferred) still
   surfaces correctly — the noise-reduction fixes don't hide real findings.
 - **Added**: nine prefixed vendor token patterns — `github-pat` (`ghp_`),
-  `github-app-token` (`ghu_`/`ghs_`), `github-fine-grained-pat`,
-  `slack-user-token` (`xoxp-`), `slack-app-token` (`xapp-`), `google-api-key`
-  (`AIza`), `anthropic-api-key` (`sk-ant-`), `npm-access-token` and
-  `docker-pat`. The set covered `gho_` but not `ghp_`, so the GitHub token a
-  developer actually pastes went undetected; re-scanning the same local log
-  corpus surfaced 41 `ghp_`, 11 `AIza` and 6 `xoxp-` values that every prior
-  run had reported clean. All nine are simple prefixed shapes from gitleaks'
-  default ruleset. A standalone AWS secret-access-key rule stays deferred: a
-  bare 40-char base64 string has no self-delimiting shape and needs the
-  keyword-context `generic-api-key` rule rather than a pattern that would
-  over-match under `--write`.
+  `github-app-token` (`ghu_`/`ghs_`/`ghr_`), `github-fine-grained-pat`,
+  `slack-user-token`, `slack-app-token`, `google-api-key`, `anthropic-api-key`,
+  `npm-access-token` and `docker-pat`. The set covered `gho_` but not `ghp_`,
+  so the GitHub token a developer actually pastes went undetected; a scan of a
+  real log corpus confirmed live tokens of several of these types that every
+  prior run had reported clean. Provenance is not uniform and the differences
+  matter: the GitHub, Google, npm and Slack rules follow gitleaks' shapes;
+  `anthropic-api-key` follows gitleaks' `api03`/`admin01` form including its
+  required infix and `AA` terminator; `docker-pat` has **no** gitleaks
+  equivalent and is pinned to Docker Hub's fixed 27-character body.
+- **Every one of the nine is left-anchored and pinned to the vendor's exact
+  body length.** Detection tooling can afford loose bounds because a human
+  triages every hit; an in-place rewriter cannot, so the same looseness is a
+  silent unrecoverable edit. Two concrete failures caught in review before
+  release: an unanchored fixed-length window over a base64 alphabet collides
+  inside ordinary base64 — brute-forcing 427MB of random base64 produced 10
+  natural collisions, one of which truncated a PNG payload inside a transcript
+  record, and the JSON validity gate cannot catch that because the damaged
+  result is still valid JSON — and a `-` in a body charset with no left anchor
+  matches ordinary kebab-case prose after any word ending in `sk`. Where
+  gitleaks wraps a rule in its `\b(...)` boundary helper, that anchor is
+  reproduced here rather than dropped.
+- A standalone AWS secret-access-key rule stays deferred: a bare 40-char
+  base64 string has no self-delimiting shape and needs the keyword-context
+  `generic-api-key` rule rather than a pattern that would over-match under
+  `--write`.
 
 ## v0.1.0
 
