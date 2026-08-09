@@ -49,6 +49,15 @@ synthetic fixtures:
   matches ordinary kebab-case prose after any word ending in `sk`. Where
   gitleaks wraps a rule in its `\b(...)` boundary helper, that anchor is
   reproduced here rather than dropped.
+- **`--version` now reports the git revision the binary was built from**, e.g.
+  `redacto 0.1.0 (21af8f70fdfc)`, with a `-dirty` suffix when the working tree
+  had uncommitted changes. A bare `0.1.0` is identical across every build, so an
+  install predating a fix could not be told apart from a current one — an install
+  built before the PEM-orphan fix stayed live and undetected, and the only way to
+  check was grepping the binary for a symbol. A build with no git metadata
+  (crates.io, tarball) reports `unknown` rather than a fabricated revision.
+- **Fixed**: the README's built-in pattern list named only the original eight
+  secret rules, omitting the nine added since.
 - A standalone AWS secret-access-key rule stays deferred: a bare 40-char
   base64 string has no self-delimiting shape and needs the keyword-context
   `generic-api-key` rule rather than a pattern that would over-match under

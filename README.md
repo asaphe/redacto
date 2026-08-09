@@ -78,11 +78,23 @@ custom = [
 
 ## Built-in patterns (v0.1)
 
-**Secret values** (adapted from gitleaks' MIT default ruleset):
+**Secret values** (mostly adapted from gitleaks' MIT default ruleset):
 AWS access keys, JWTs, private-key/PEM blocks (structural handler, not a
-single regex), Slack bot tokens, GitLab PATs, GitHub OAuth tokens, Stripe
-access tokens, Slack webhook URLs, plus one project-specific ClickHouse Cloud
-API key rule.
+single regex), Slack bot/user/app tokens, GitLab PATs, GitHub OAuth, personal,
+app/refresh and fine-grained tokens, Google API keys, Anthropic API keys, npm
+access tokens, Docker Hub PATs, Stripe access tokens, Slack webhook URLs, plus
+one project-specific ClickHouse Cloud API key rule.
+
+The GitHub, Google, Anthropic, npm, Docker and ClickHouse rules are
+left-anchored and pinned to the vendor's exact body length. That is stricter
+than gitleaks, deliberately: gitleaks reports findings for a human to triage,
+whereas this tool rewrites the file, so a loose bound is a silent unrecoverable
+edit rather than a false positive someone dismisses.
+
+The older `gho_`, `glpat-`, `xoxb-` and Stripe rules still carry open-ended
+quantifiers and, for the first three, no left anchor — so they can consume
+adjacent text (a `glpat-` token followed by kebab-case prose takes the whole
+run). Tightening them to the same standard is outstanding.
 
 **Infrastructure identifiers**: AWS resource IDs (vpc/sg/subnet/etc.), EC2
 instance IDs, Route53 zone IDs, AWS account IDs, absolute home paths,
