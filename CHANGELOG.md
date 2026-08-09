@@ -26,6 +26,18 @@ synthetic fixtures:
   genuine pre-existing finding (real AWS temporary credentials in a file the
   original manual secret-scrub effort had explicitly deferred) still
   surfaces correctly — the noise-reduction fixes don't hide real findings.
+- **Added**: nine prefixed vendor token patterns — `github-pat` (`ghp_`),
+  `github-app-token` (`ghu_`/`ghs_`), `github-fine-grained-pat`,
+  `slack-user-token` (`xoxp-`), `slack-app-token` (`xapp-`), `google-api-key`
+  (`AIza`), `anthropic-api-key` (`sk-ant-`), `npm-access-token` and
+  `docker-pat`. The set covered `gho_` but not `ghp_`, so the GitHub token a
+  developer actually pastes went undetected; re-scanning the same local log
+  corpus surfaced 41 `ghp_`, 11 `AIza` and 6 `xoxp-` values that every prior
+  run had reported clean. All nine are simple prefixed shapes from gitleaks'
+  default ruleset. A standalone AWS secret-access-key rule stays deferred: a
+  bare 40-char base64 string has no self-delimiting shape and needs the
+  keyword-context `generic-api-key` rule rather than a pattern that would
+  over-match under `--write`.
 
 ## v0.1.0
 
