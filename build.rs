@@ -1,6 +1,10 @@
 use std::path::Path;
 use std::process::Command;
 
+mod build_rev;
+
+use build_rev::{Revision, is_own_checkout, parse_vcs_info, resolve_revision};
+
 fn git(dir: &str, args: &[&str]) -> Option<String> {
     let out = Command::new("git")
         .arg("-C")
@@ -16,46 +20,49 @@ fn git(dir: &str, args: &[&str]) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-// `cargo package` records the true revision here; a packaged crate has no .git to probe.
-fn packaged_revision(dir: &str) -> Option<String> {
-    let text = std::fs::read_to_string(Path::new(dir).join(".cargo_vcs_info.json")).ok()?;
-    let sha = text
-        .split("\"sha1\"")
-        .nth(1)?
-        .split('"')
-        .nth(1)?
-        .to_string();
-    (sha.len() >= 12).then(|| sha[..12].to_string())
+// Both sides are canonicalized before comparison because the manifest dir and git's answer can spell the same directory differently (a symlinked /tmp, a worktree), and a spurious mismatch would stamp every build `unknown`.
+fn canonical(path: &str) -> Option<String> {
+    Some(std::fs::canonicalize(path).ok()?.to_str()?.to_string())
 }
 
 fn main() {
     let dir = std::env::var("CARGO_MANIFEST_DIR").unwrap_or_else(|_| ".".to_string());
 
-    if let Some(sha) = packaged_revision(&dir) {
-        println!("cargo:rerun-if-changed=.cargo_vcs_info.json");
-        println!("cargo:rustc-env=REDACTO_BUILD_REV={sha}");
-        return;
-    }
+    let packaged = std::fs::read_to_string(Path::new(&dir).join(".cargo_vcs_info.json"))
+        .ok()
+        .as_deref()
+        .and_then(parse_vcs_info);
 
-    // git resolves the NEAREST enclosing repo, so an extracted copy inside an unrelated repo would otherwise be stamped with that repo's revision — a wrong SHA is worse than none.
-    let tracked = git(&dir, &["ls-files", "--error-unmatch", "Cargo.toml"]).is_some();
-
-    let revision = if tracked {
-        git(&dir, &["rev-parse", "--short=12", "HEAD"])
-    } else {
+    // Probed only when there is no packaged revision, so a crates.io build never shells out to git at all.
+    let head = if packaged.is_some() {
         None
+    } else {
+        let manifest = canonical(&dir).unwrap_or_else(|| dir.clone());
+        let own = git(&dir, &["ls-files", "--error-unmatch", "Cargo.toml"]).is_some()
+            && is_own_checkout(
+                git(&dir, &["rev-parse", "--show-toplevel"])
+                    .and_then(|top| canonical(&top))
+                    .as_deref(),
+                &manifest,
+            );
+        own.then(|| git(&dir, &["rev-parse", "--short=12", "HEAD"]))
+            .flatten()
     };
 
-    match revision {
-        Some(sha) => {
+    let revision = resolve_revision(packaged, head);
+
+    match &revision {
+        Revision::Packaged { .. } => println!("cargo:rerun-if-changed=.cargo_vcs_info.json"),
+        Revision::Git(_) => {
             // --git-path resolves through a worktree, where .git is a file rather than a directory.
             for spec in ["HEAD", "logs/HEAD"] {
                 if let Some(path) = git(&dir, &["rev-parse", "--git-path", spec]) {
                     println!("cargo:rerun-if-changed={path}");
                 }
             }
-            println!("cargo:rustc-env=REDACTO_BUILD_REV={sha}");
         }
-        None => println!("cargo:rustc-env=REDACTO_BUILD_REV=unknown"),
+        Revision::Unknown => {}
     }
+
+    println!("cargo:rustc-env=REDACTO_BUILD_REV={}", revision.stamp());
 }

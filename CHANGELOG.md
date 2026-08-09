@@ -109,6 +109,20 @@ synthetic fixtures:
   `generic-api-key` rule rather than a pattern that would over-match under
   `--write`.
 
+- **Fixed**: `--version` could report a revision the binary was not built from.
+  A copy vendored into an unrelated repository was stamped with *that*
+  repository's HEAD — `git ls-files` only rules out an *untracked* copy, and a
+  committed `vendor/` subdirectory is tracked — so the repo root must now also
+  be this crate's own manifest directory, and such a build reports `unknown`.
+  A crate packaged from a modified tree was stamped with a clean-looking sha;
+  cargo records `"dirty": true` in `.cargo_vcs_info.json` and that now surfaces
+  as a `-dirty` suffix rather than asserting a provenance the artifact lacks.
+- **Fixed**: `.cargo_vcs_info.json` is parsed as JSON instead of split on the
+  `"sha1"` key. Splitting took the first occurrence anywhere in the document,
+  so a sibling object yielded a sha from the wrong one and a half-written file
+  still answered confidently; the short form is also truncated by character
+  rather than by byte, which panicked mid-character and aborted the build.
+
 ## v0.1.0
 
 Initial implementation:
