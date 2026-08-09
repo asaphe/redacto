@@ -2,6 +2,52 @@
 
 ## [Unreleased]
 
+- **Fixed**: four rules could consume adjacent text under `--write`.
+  `gitlab-pat` (`glpat-[\w-]{20,}`), `slack-bot-token` (trailing
+  `[a-zA-Z0-9-]*`) and `github-oauth` (`{36,}`) were open-ended, and
+  `slack-webhook-url` matched a single `[A-Za-z0-9+/]{43,56}` span with the
+  path separator *inside* the charset. Measured before the fix: a
+  `GITLAB_TOKEN:` line lost `-prod-runner-shared-config`, and a real
+  `services/` webhook URL lost the following `/archive/2026` path. Each rule
+  is now left-anchored and bounded to the vendor's real token length, with
+  the webhook path bounded per segment.
+- **Fixed**: a routable GitLab PAT was half-redacted. The classic rule
+  consumed the body greedily up to the `.` and left `.<9 chars>` behind; a
+  `gitlab-pat-routable` rule now runs ahead of it and redacts the token whole.
+  Its body is alphanumeric-only and its checksum `\b`-terminated: upstream
+  relies on an entropy gate this crate does not have, and with `-`/`_`
+  admitted the greedy body spanned ordinary kebab-case prose as far as any
+  dotted nine-letter word and deleted all of it.
+- **Added**: token shapes that were passing through in cleartext —
+  `slack-legacy-bot-token` (two-segment `xoxb-`), `slack-legacy-token`
+  (`xoxs-`/`xoxo-`) and `slack-legacy-workspace-token` (`xoxa-`/`xoxr-`,
+  documented five-segment form only, since gitleaks' looser variant relies
+  on an entropy gate this crate does not have).
+- **Behaviour change**: `slack-bot-token` now requires a secret segment of
+  at least 16 chars. `xoxb-<digits>-<digits>` with a shorter or absent third
+  segment was redacted by the previous release and is not a usable
+  credential, but the narrowing is real and is recorded here rather than
+  discovered later.
+- **Known, unchanged**: with no lookahead, a ranged body cannot both always
+  match and never over-consume, so every ranged rule can run past a real token
+  into adjacent *in-charset* text by up to the width of its range —
+  `slack-user-token` by 2 chars past a real 32-char tail, `slack-bot-token` by
+  up to 8, `slack-legacy-bot-token` by up to 2. Narrowing a charset instead
+  drops any real token containing that character — measured in both directions
+  for `slack-user-token`. Tests pin the current behaviour rather than implying
+  it is absent.
+- **Testing**: the five registered-but-untested rules (`slack-bot-token`,
+  `gitlab-pat`, `github-oauth`, `slack-webhook-url`,
+  `clickhouse-cloud-api-secret-key`) now have coverage, and the five ranged
+  Slack rules assert both ends of their tail bound by exact output — asserting
+  only that the match *stops by* the cap is satisfied by any shorter match too,
+  which would let a cap be lowered silently and truncate a live credential.
+  Still unasserted, and listed so the next change knows: the numeric-segment
+  ceilings, `gitlab-pat-routable`'s 300-char body cap, `slack-webhook-url`'s
+  six path-segment quantifiers, and left-anchor
+  or alternation coverage for `aws-access-token` (including its `ASIA`
+  temporary-credential branch), `stripe-access-token` and `jwt`.
+
 Found via real-world testing against a large personal Claude Code log
 corpus (2.86GB, 3400+ files) — first genuine end-to-end validation beyond
 synthetic fixtures:
