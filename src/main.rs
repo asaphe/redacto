@@ -12,7 +12,7 @@ use redacto::patterns::{Pattern, PatternSet};
 #[derive(Parser)]
 #[command(
     name = "redacto",
-    version,
+    version = concat!(env!("CARGO_PKG_VERSION"), " (", env!("REDACTO_BUILD_REV"), ")"),
     about = "Redacts secrets and infra identifiers from files in place, safely and repeatedly."
 )]
 struct Cli {
