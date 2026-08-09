@@ -41,6 +41,36 @@ static SLACK_WEBHOOK_URL_RE: LazyLock<Regex> = LazyLock::new(|| {
 static CLICKHOUSE_CLOUD_API_SECRET_KEY_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\b4b1d[A-Za-z0-9]{38}\b").unwrap());
 
+// Left-anchored and exact-length on purpose — this crate rewrites files, so a loose bound is an unrecoverable edit rather than a triageable finding.
+static GITHUB_PAT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bghp_[0-9a-zA-Z]{36}").unwrap());
+
+// ghr_ (refresh token) rides the same upstream alternation and is an equally live credential.
+static GITHUB_APP_TOKEN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\b(?:ghu|ghs|ghr)_[0-9a-zA-Z]{36}").unwrap());
+
+static GITHUB_FINE_GRAINED_PAT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bgithub_pat_[0-9A-Za-z_]{82}").unwrap());
+
+static SLACK_USER_TOKEN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bxox[pe](?:-[0-9]{10,13}){3}-[a-zA-Z0-9-]{28,34}").unwrap());
+
+static SLACK_APP_TOKEN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bxapp-[0-9]-[A-Z0-9]{9,}-[0-9]{10,13}-[a-f0-9]{64}").unwrap());
+
+static GOOGLE_API_KEY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bAIza[0-9A-Za-z_-]{35}").unwrap());
+
+// The api03/admin01 infix and AA terminator are load-bearing: without them this matches ordinary kebab-case prose after any word ending in "sk".
+static ANTHROPIC_API_KEY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bsk-ant-(?:api03|admin01)-[0-9a-zA-Z_-]{93}AA").unwrap());
+
+static NPM_ACCESS_TOKEN_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bnpm_[0-9a-zA-Z]{36}").unwrap());
+
+static DOCKER_PAT_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bdckr_pat_[0-9a-zA-Z_-]{27}").unwrap());
+
 // v0.1 high-confidence subset validated against real data — see README for what's deferred and why.
 pub fn secret_patterns() -> Vec<Pattern> {
     vec![
@@ -55,6 +85,15 @@ pub fn secret_patterns() -> Vec<Pattern> {
             "clickhouse-cloud-api-secret-key",
             &CLICKHOUSE_CLOUD_API_SECRET_KEY_RE,
         ),
+        Pattern::simple("github-pat", &GITHUB_PAT_RE),
+        Pattern::simple("github-app-token", &GITHUB_APP_TOKEN_RE),
+        Pattern::simple("github-fine-grained-pat", &GITHUB_FINE_GRAINED_PAT_RE),
+        Pattern::simple("slack-user-token", &SLACK_USER_TOKEN_RE),
+        Pattern::simple("slack-app-token", &SLACK_APP_TOKEN_RE),
+        Pattern::simple("google-api-key", &GOOGLE_API_KEY_RE),
+        Pattern::simple("anthropic-api-key", &ANTHROPIC_API_KEY_RE),
+        Pattern::simple("npm-access-token", &NPM_ACCESS_TOKEN_RE),
+        Pattern::simple("docker-pat", &DOCKER_PAT_RE),
     ]
 }
 
@@ -104,5 +143,137 @@ mod tests {
         let text = format!("sk_test_{long_body}");
         let (_, count) = pattern.apply(&text);
         assert_eq!(count, 1);
+    }
+
+    fn pattern_for(id: &str) -> P {
+        secret_patterns().into_iter().find(|p| p.id == id).unwrap()
+    }
+
+    // Three shapes per rule, because a length-only near-miss passes against almost any wrong bound.
+    fn assert_pattern(id: &str, token: &str, negatives: &[&str]) {
+        let text = format!("value={token} end");
+        let (out, count) = pattern_for(id).apply(&text);
+        assert_eq!(count, 1, "{id} must detect a full-length token");
+        assert_eq!(out, format!("value=[REDACTED-{id}] end"));
+
+        let embedded = format!("xyz{token}");
+        let (_, c) = pattern_for(id).apply(&embedded);
+        assert_eq!(
+            c, 0,
+            "{id} fired with its prefix preceded by a word char - missing left \\b, so it can match inside a base64 blob"
+        );
+
+        let butted = format!("{token}AAAA");
+        let (out, c) = pattern_for(id).apply(&butted);
+        assert_eq!(c, 1, "{id} must still match with in-charset text appended");
+        assert!(
+            out.ends_with("AAAA"),
+            "{id} swallowed adjacent text - bound is not exact: {out}"
+        );
+
+        for n in negatives {
+            let (_, c) = pattern_for(id).apply(n);
+            assert_eq!(c, 0, "{id} must not match {n}");
+        }
+    }
+
+    const B36: &str = "0123456789abcdefghijklmnopqrstuvwxyz";
+
+    #[test]
+    fn github_pat() {
+        assert_pattern("github-pat", &format!("ghp_{B36}"), &["ghp_tooshort"]);
+    }
+
+    #[test]
+    fn github_app_token_covers_every_prefix_in_its_alternation() {
+        for prefix in ["ghu", "ghs", "ghr"] {
+            assert_pattern(
+                "github-app-token",
+                &format!("{prefix}_{B36}"),
+                &[&format!("{prefix}_short")],
+            );
+        }
+        let (_, c) = pattern_for("github-app-token").apply(&format!("gha_{B36}"));
+        assert_eq!(c, 0, "gha_ is not a GitHub token prefix");
+    }
+
+    #[test]
+    fn github_fine_grained_pat() {
+        let body = format!("{B36}{B36}_{}", &B36[..9]);
+        assert_eq!(body.len(), 82);
+        assert_pattern(
+            "github-fine-grained-pat",
+            &format!("github_pat_{body}"),
+            &["github_pat_short", "my_github_pat_cache_key_0123456789"],
+        );
+    }
+
+    #[test]
+    fn slack_user_token() {
+        let tail = &B36[..34];
+        assert_pattern(
+            "slack-user-token",
+            &format!("xoxp-1234567890-1234567890-1234567890-{tail}"),
+            &["xoxp-123-456", "xoxp-1234567890-1234567890-abcdef"],
+        );
+    }
+
+    #[test]
+    fn slack_app_token() {
+        let tail = "0123456789abcdef".repeat(4);
+        assert_pattern(
+            "slack-app-token",
+            &format!("xapp-1-A0B1C2D3E-1234567890-{tail}"),
+            &["xapp-1-ABC-123-short"],
+        );
+    }
+
+    #[test]
+    fn google_api_key_does_not_fire_inside_a_base64_blob() {
+        // A 39-char window over a base64 alphabet collides inside ordinary blobs without a left anchor.
+        let body = format!("{}-_", &B36[..33]);
+        assert_eq!(body.len(), 35);
+        assert_pattern(
+            "google-api-key",
+            &format!("AIza{body}"),
+            &[
+                "AIzaShort",
+                "exX5cDZeFaAknBVKRZJ7Q995kgkNErAIzaQKW5udj76ImifDqan5bpq1vBrS4xl",
+            ],
+        );
+    }
+
+    #[test]
+    fn anthropic_api_key_does_not_fire_on_kebab_case_prose() {
+        // Without the infix, any word ending in "sk" followed by a kebab-case run matched.
+        let body = format!("{B36}{B36}{}-_", &B36[..19]);
+        assert_eq!(body.len(), 93);
+        assert_pattern(
+            "anthropic-api-key",
+            &format!("sk-ant-api03-{body}AA"),
+            &[
+                "sk-ant-short",
+                "the risk-ant-pattern-matching-benchmark-suite-results-for-2026",
+                "task-ant-colony-optimization-algorithm-implementation-notes-v2",
+            ],
+        );
+        let (_, c) = pattern_for("anthropic-api-key").apply(&format!("sk-ant-admin01-{body}AA"));
+        assert_eq!(c, 1, "admin01 keys are as live as api03 keys");
+    }
+
+    #[test]
+    fn npm_access_token() {
+        assert_pattern("npm-access-token", &format!("npm_{B36}"), &["npm_install"]);
+    }
+
+    #[test]
+    fn docker_pat() {
+        let body = format!("{}-_", &B36[..25]);
+        assert_eq!(body.len(), 27);
+        assert_pattern(
+            "docker-pat",
+            &format!("dckr_pat_{body}"),
+            &["dckr_pat_short"],
+        );
     }
 }
