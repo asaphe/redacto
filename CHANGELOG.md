@@ -2,6 +2,36 @@
 
 ## [Unreleased]
 
+- **Added**: `scripts/image-carrier-sweep.py`, wired into the plugin's
+  `SessionStart` hook. A secret pasted as a screenshot was invisible to the
+  text sweep, and the run reported the corpus clean — the strongest form of
+  the failure this tool exists to prevent. The carrier also lands in two
+  sinks at once (`~/.claude/image-cache/` and a byte-identical base64 copy
+  inlined in the transcript), so removing either alone leaves a live copy.
+  The new pass handles both together: image payloads older than
+  `--max-age-hours` (default 24) become a 1×1 transparent PNG, and cache
+  files past the same window are deleted. Blanket by age deliberately —
+  without OCR nothing distinguishes an image holding a secret from one
+  holding a chart, and the alternative fails silently. Covers both
+  `source.data` and `toolUseResult.file.base64`; stripping only the first
+  leaves the image fully recoverable while looking scrubbed. Guarded by a
+  live-window skip, a per-record structural-equality check that aborts the
+  whole rewrite rather than writing a partial one, a line-count assertion,
+  and atomic replace. 49 controls in `tests/probe-image-carrier-sweep.py`,
+  now run in CI alongside `bash -n` on the hook scripts.
+- **Added**: `redacto_sink_excludes` and a `.redacto-exempt` opt-out marker.
+  A directory whose secret-shaped literals *are* its content — a detector's
+  patterns, its test corpora, a control fixture — can now exclude its own
+  subtree. Without it, sweeping a working checkout silently rewrites the
+  fixtures that prove a scanner works. Also excludes VCS, build output, and
+  vendored dependency trees by default. The marker binds both stages: the
+  same globs reach `image-carrier-sweep.py` via `--exclude`, so an exempt
+  fixture holding a deliberate inline image keeps it. An exclusion honoured
+  by only one stage would destroy precisely what it appeared to protect.
+- **Added**: `~/.claude/local` and the session scratchpad
+  (`/tmp/claude-$(id -u)`) to the swept sinks. Both accumulate fetched
+  values and raw command dumps as ordinary files; neither was covered.
+
 - **Fixed**: four rules could consume adjacent text under `--write`.
   `gitlab-pat` (`glpat-[\w-]{20,}`), `slack-bot-token` (trailing
   `[a-zA-Z0-9-]*`) and `github-oauth` (`{36,}`) were open-ended, and

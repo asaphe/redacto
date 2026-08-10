@@ -23,3 +23,5 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
+      - run: bash -n scripts/redacto-log-sweep.sh scripts/redacto-sinks.sh
+      - run: python3 tests/probe-image-carrier-sweep.py

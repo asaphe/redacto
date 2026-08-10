@@ -149,12 +149,8 @@ in-place rewriting, incremental scanning, and safe multi-line handling.
 
 ## Claude Code plugin
 
-This repo doubles as a Claude Code plugin (`.claude-plugin/`) that runs an
-incremental `redacto` sweep as a `SessionStart` hook, over the local Claude
-Code log sinks that tend to accumulate secrets during normal work: session
-transcripts (`~/.claude/projects`), `paste-cache/`, `file-history/`,
-`backups/`, `history.jsonl` (+ dated rotations), and RTK's `tee/` mirror if
-present.
+This repo doubles as a Claude Code plugin (`.claude-plugin/`) that sweeps the
+local Claude Code log sinks on `SessionStart`.
 
 Install:
 
@@ -163,14 +159,121 @@ claude plugin marketplace add asaphe/redacto
 claude plugin install redacto@redacto
 ```
 
-The plugin only wires the hook — it still calls the `redacto` binary on
-`PATH`, so `cargo install --path .` (or however you install the CLI) is
-still required. The hook is a no-op if `redacto` isn't found.
+The plugin only wires the hook — it calls the `redacto` binary on `PATH`, so
+`cargo install --path .` (or however you install the CLI) is still required.
+The whole hook, image sweep included, is a no-op if `redacto` isn't found:
+installing the plugin on its own must never start deleting anything.
 
 For a tighter sweep interval than "once per session start," pair this with
-your own cron/launchd invocation of `redacto` against the same paths (see
+your own cron/launchd invocation of `scripts/redacto-log-sweep.sh` (see
 [Built-in patterns](#built-in-patterns-v01) above on why this isn't a
 built-in daemon mode).
+
+### How the plugin works
+
+`scripts/redacto-sinks.sh` is the single source of truth for what gets swept,
+and it declares four lists rather than one, because a sink's carrier decides
+its policy:
+
+| List | Paths | Policy |
+|---|---|---|
+| `redacto_sink_paths` | `~/.claude/projects`, `paste-cache/`, `file-history/`, `backups/`, `local/`, `history.jsonl` (+ dated rotations), the session scratchpad at `/tmp/claude-$(id -u)`, RTK's `tee/` mirror if present | redact in place |
+| `redacto_sink_excludes` | `--exclude` globs: VCS, build output, vendored dependency trees, plus any `.redacto-exempt` subtree | never scanned |
+| `redacto_transcript_roots` | `~/.claude/projects` and the scratchpad | additionally image-swept |
+| `redacto_image_cache_paths` | `~/.claude/image-cache` | delete only |
+
+Read the file rather than trusting a list quoted elsewhere — it grows, and a
+stale count reads as a coverage claim. Note the third list is narrower than the
+first: `history.jsonl` is a `.jsonl` file but is not image-swept, because images
+are inlined into session transcripts and nothing else.
+
+### The image carrier
+
+A secret pasted or screenshotted into a session is invisible to a text
+redactor, and the sweep does not merely miss it — it reports the corpus
+clean. The carrier also lands in **two** sinks at once: the file in
+`~/.claude/image-cache/`, and a byte-identical base64 copy inlined into the
+transcript under `~/.claude/projects/`. Removing either alone leaves a live
+copy.
+
+`scripts/image-carrier-sweep.py` (Python 3.9+, no dependencies) handles both
+in one pass. For this carrier there is no redaction, only destruction: every
+inlined image payload older than the age window is replaced with a 96-char
+1×1 transparent PNG — valid base64, so the record stays well-formed and the
+session remains resumable — and the cache files past the same window are
+deleted.
+
+It is blanket by age on purpose. Without OCR nothing distinguishes an image
+holding a secret from one holding a chart, and a sweep that silently misses
+one is the failure mode this tool exists to remove. The cost is real:
+legitimate screenshots in old transcripts are destroyed too. The window is
+therefore short rather than exempted — `--max-age-hours` (default 24) is the
+knob.
+
+Guards, all covered by `tests/probe-image-carrier-sweep.py`:
+
+- Files modified inside `--live-window-secs` (default 300) are skipped, and
+  the file is re-`stat`ed immediately before the swap — an append that lands
+  while the rewrite is in flight throws the rewrite away rather than
+  truncating those records. The mtime check alone would not catch that: it is
+  taken before the read, and a large transcript takes a moment to rewrite.
+  A residual window remains between that final `stat` and the rename itself,
+  and a same-size in-place edit with a restored mtime is not detected — both
+  are narrow, and neither is the append case the guard targets.
+- Both payload fields are covered — a tool-result screenshot duplicates its
+  bytes into `source.data` *and* `toolUseResult.file.base64`, and stripping
+  only the first leaves the image fully recoverable while looking scrubbed.
+- Each rewritten record is compared against the original with every image
+  payload blanked; if anything outside a payload would change, the whole file
+  is left untouched. A partial rewrite is worse than a missed sweep.
+- Line count is asserted; the replacement is `fsync`'d, atomically renamed,
+  and the containing directory `fsync`'d, so a crash cannot leave a truncated
+  transcript behind. A temp file from a killed run is reaped on the next
+  sweep — it holds a partial copy of the transcript it came from.
+- Symlinked transcripts are skipped. Rewriting one replaces the link with a
+  regular file and leaves the real target — and its payload — untouched.
+- Re-runs are no-ops via an incremental state cache, keyed on mtime and size
+  *and* on a detector version. A file the sweep just rewrote is re-read once
+  more on the following run before it stamps clean. Bumping that version re-opens every file: a
+  payload shape the sweep could not recognise must not stay whitelisted by
+  the run that failed to see it.
+- Only image files are deleted from a cache directory, and only directories
+  the run itself emptied are removed. Anything else sharing that directory
+  survives.
+
+Run it standalone with `--dry-run` to see what a window would remove before
+committing to it:
+
+```sh
+python3 scripts/image-carrier-sweep.py --dry-run --max-age-hours 24
+```
+
+### Exempting a fixture directory
+
+Some directories hold secret-shaped literals *as their content* — a
+detector's own pattern definitions, its test corpora, a known-positive
+control fixture used to prove a scanner works. Redacting those disarms the
+scanner that exists to catch real leaks, which is strictly worse than the
+leak.
+
+Drop an empty `.redacto-exempt` file in such a directory and
+`redacto_sink_excludes` turns it into an exclude glob for that whole subtree:
+
+```sh
+touch /path/to/fixtures/.redacto-exempt
+```
+
+The marker binds **both** stages — the hook passes the same globs to `redacto`
+and to `image-carrier-sweep.py`, so an exempt directory holding a `.jsonl`
+fixture with a deliberate inline image keeps that payload too. A marker that
+covered only the text stage would quietly destroy exactly the fixtures it
+appeared to protect.
+
+Markers are searched up to 5 levels below each of `~/.claude/projects`,
+`~/.claude/image-cache`, `~/.claude/local` and the session scratchpad — every
+root either stage walks.
+`image-carrier-sweep.py` also takes `--exclude GLOB` directly (repeatable,
+full-path match) when run standalone.
 
 ## License
 
