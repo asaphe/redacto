@@ -50,6 +50,14 @@
   included — for a binary a `SessionStart` hook then runs unattended over the
   local log sinks.
 
+- **Fixed**: `case_marker_search_covers_sweep_roots` failed open. It returned
+  silently when `scripts/redacto-sinks.sh` was absent, so a rename or a move
+  would have retired the control while the suite still printed `all controls
+  passed` and exited 0 — the same report-clean-when-it-is-not shape as the hook
+  defects above, this time in the thing that checks them. It now fails with the
+  path it looked in. Verified both ways: with the file hidden, the old code
+  exited 0 and the new code exits 1. It was the only fail-open early return
+  across all 17 controls.
 - **Added**: `cargo audit` to CI, inside the required `test` job rather than a
   job of its own — 61 dependencies shipped with no advisory gate, for a binary a
   `SessionStart` hook runs unattended with `--write`, so an advisory should block

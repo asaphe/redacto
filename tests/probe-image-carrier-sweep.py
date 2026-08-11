@@ -369,7 +369,10 @@ def case_unwritable_dir_does_not_sink_the_run(root):
 def case_marker_search_covers_sweep_roots(root):
     """redacto_sink_excludes must emit globs for the roots the sweep actually walks."""
     sinks = os.path.join(os.path.dirname(HERE), "scripts", "redacto-sinks.sh")
-    if not os.path.exists(sinks):
+    found = os.path.exists(sinks)
+    # Fails rather than returns: a silent skip reports a full pass with this control never run.
+    check("redacto-sinks.sh is where this control looks for it", found, sinks)
+    if not found:
         return
     text = open(sinks, encoding="utf-8").read()
     for needed in ("$HOME/.claude/projects", "$HOME/.claude/image-cache"):
