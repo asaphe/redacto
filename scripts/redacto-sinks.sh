@@ -13,7 +13,8 @@ redacto_sink_paths() {
   # Task-local notes and hook logs, which record verbatim command text.
   [ -d "$HOME/.claude/local" ] && paths+=("$HOME/.claude/local")
   # Session scratchpad — fetched values and raw command dumps land here as ordinary files.
-  local scratch="/tmp/claude-$(id -u)"
+  local scratch
+  scratch="/tmp/claude-$(id -u)"
   [ -d "$scratch" ] && paths+=("$scratch")
   local f
   for f in "$HOME"/.claude/history.jsonl "$HOME"/.claude/history.jsonl.*; do
@@ -47,7 +48,8 @@ redacto_sink_excludes() {
 # Roots holding .jsonl transcripts, which carry images inline as base64 no text redactor can see.
 redacto_transcript_roots() {
   local paths=("$HOME/.claude/projects")
-  local scratch="/tmp/claude-$(id -u)"
+  local scratch
+  scratch="/tmp/claude-$(id -u)"
   [ -d "$scratch" ] && paths+=("$scratch")
   printf '%s\n' "${paths[@]}"
 }

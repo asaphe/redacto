@@ -24,4 +24,9 @@ jobs:
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
       - run: bash -n scripts/redacto-log-sweep.sh scripts/redacto-sinks.sh
+      # bash -n catches syntax only; SC1091/SC2155 here were found by a downstream consumer's stricter gate.
+      - name: shellcheck
+        run: |
+          shellcheck --version >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
+          shellcheck -x scripts/*.sh
       - run: python3 tests/probe-image-carrier-sweep.py

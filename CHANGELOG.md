@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+- **Fixed**: `shellcheck -x` findings in the hook scripts — SC1091 in
+  `redacto-log-sweep.sh` (sourcing a sibling by `$DIR`, resolved with
+  `source-path=SCRIPTDIR` rather than a literal path, so the directive survives
+  being vendored elsewhere) and SC2155 twice in `redacto-sinks.sh`, where
+  `local scratch="/tmp/claude-$(id -u)"` masked the command substitution's exit
+  status. Behaviour-neutral: all four sink functions emit byte-identical output
+  before and after. `shellcheck -x` now runs in CI beside `bash -n`, which
+  catches syntax only and passed on all three of these.
+- **Fixed**: the plugin install note recommended `cargo install --path .`
+  without `--locked`, so the packaged `Cargo.lock` was ignored and all 61
+  dependencies re-resolved from crates.io at install time, build scripts
+  included — for a binary a `SessionStart` hook then runs unattended over the
+  local log sinks.
+
 - **Added**: `scripts/image-carrier-sweep.py`, wired into the plugin's
   `SessionStart` hook. A secret pasted as a screenshot was invisible to the
   text sweep, and the run reported the corpus clean — the strongest form of

@@ -2,6 +2,7 @@
 # SessionStart hook: incremental redacto sweep over local Claude Code log sinks — see README § How the plugin works.
 
 DIR="$(dirname "${BASH_SOURCE[0]}")"
+# shellcheck source-path=SCRIPTDIR
 source "$DIR/redacto-sinks.sh"
 
 REDACTO="$HOME/.cargo/bin/redacto"
