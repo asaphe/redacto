@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+- **Fixed**: a redacting write no longer drops the file's mode. `write_atomically`
+  created the temp file with `std::fs::write` — born with the umask default — and
+  renamed it over the original, so a `0600` log came back `0644`. Measured on a
+  real install: `~/.claude/history.jsonl` and every transcript under
+  `~/.claude/projects` are `0600`, umask is `022`, and a write-temp-then-rename
+  cycle turns `600` into `644`. The sweep was therefore making exactly the files
+  that had held pasted secrets group- and world-readable, every run. The image
+  sweep already preserved mode via `os.fchmod`; nothing in the crate did.
+  Regression test asserts `0o600` as a literal rather than against the mode read
+  back, and fails `left: 420, right: 384` with the fix removed.
+- **Fixed**: the `SessionStart` hook discarded PEM-only findings. Its
+  clear-if-nothing-happened check tested redactions, validation failures and
+  unsafe lines, but not the unresolved-PEM-marker count carried on the same
+  summary line — contradicting `report()`, which counts an unresolved orphan as
+  not-clean and exits 1 for it.
+- **Fixed**: a crashing binary was indistinguishable from a clean sweep. The
+  summary was captured by piping into `grep`, which discards the exit status, and
+  a panic carries no `redacto:` prefix to survive the filter, so every count
+  defaulted to zero and the hook exited 0 with no output. Output and status are
+  captured separately now. Note the subtlety: a non-zero exit is *not* proof of
+  failure, since `report()` exits 1 on a completed-but-not-clean run — the
+  presence of a summary line is what distinguishes the two, and it is captured
+  before the zero-count blanking so a real finding is never overwritten by a
+  false failure message.
 - **Fixed**: `shellcheck -x` findings in the hook scripts — SC1091 in
   `redacto-log-sweep.sh` (sourcing a sibling by `$DIR`, resolved with
   `source-path=SCRIPTDIR` rather than a literal path, so the directive survives

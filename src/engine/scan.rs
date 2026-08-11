@@ -218,6 +218,11 @@ fn write_atomically(
         let _ = std::fs::remove_file(&tmp_path);
         return None;
     }
+    // The temp file is born with the umask default, so a 600 log would come back 644 after the rename.
+    if std::fs::set_permissions(&tmp_path, current_meta.permissions()).is_err() {
+        let _ = std::fs::remove_file(&tmp_path);
+        return None;
+    }
     if std::fs::rename(&tmp_path, path).is_err() {
         let _ = std::fs::remove_file(&tmp_path);
         return None;
@@ -244,6 +249,37 @@ mod tests {
             state_path,
             include_pem: true,
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_redacting_write_preserves_the_original_file_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("private.log");
+        // Built rather than spelled out, as secrets.rs's own AWS fixture is.
+        let fixture = format!("leak AKIA{} here\n", "ABCDEFGHIJKLMNOP");
+        fs::write(&file_path, &fixture).unwrap();
+        fs::set_permissions(&file_path, fs::Permissions::from_mode(0o600)).unwrap();
+
+        let report = scan_paths(
+            std::slice::from_ref(&file_path),
+            &all_patterns(),
+            &opts(dir.path().join("watermark.json"), true),
+        )
+        .unwrap();
+        let written = match &report.results[0].outcome {
+            FileOutcome::Redacted { written, .. } => *written,
+            _ => panic!("expected a Redacted outcome"),
+        };
+
+        assert!(written, "the fixture must actually be rewritten");
+        // 0o600 as a literal: comparing against the mode read back would pass for any value.
+        let mode = fs::metadata(&file_path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(
+            mode, 0o600,
+            "an owner-only log must not come back group/world-readable after redaction"
+        );
     }
 
     #[test]

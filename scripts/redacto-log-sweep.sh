@@ -15,13 +15,28 @@ while IFS= read -r p; do SINKS+=("$p"); done < <(redacto_sink_paths)
 EXCLUDES=()
 while IFS= read -r g; do EXCLUDES+=(--exclude "$g"); done < <(redacto_sink_excludes)
 
-SUMMARY=$("$REDACTO" --write --patterns secrets "${EXCLUDES[@]}" "${SINKS[@]}" 2>&1 | grep '^redacto:')
+# Output and status captured separately: piping straight into grep discards the exit code, so a crash read as a clean sweep.
+REDACTO_OUT=$("$REDACTO" --write --patterns secrets "${EXCLUDES[@]}" "${SINKS[@]}" 2>&1)
+REDACTO_RC=$?
+SUMMARY=$(printf '%s\n' "$REDACTO_OUT" | grep '^redacto:')
+# Kept unblanked: a summary line is the proof the run reached the end, whatever it exited with.
+RAW_SUMMARY="$SUMMARY"
 
 TOTAL=$(echo "$SUMMARY" | grep -oE '[0-9]+ total redaction' | grep -oE '^[0-9]+')
 FAILS=$(echo "$SUMMARY" | grep -oE '[0-9]+ validation failure' | grep -oE '^[0-9]+')
 UNSAFE=$(echo "$SUMMARY" | grep -oE '[0-9]+ file\(s\) with unsafe lines' | grep -oE '^[0-9]+')
-if [ "${TOTAL:-0}" -eq 0 ] && [ "${FAILS:-0}" -eq 0 ] && [ "${UNSAFE:-0}" -eq 0 ]; then
+# PEM counts too: the CLI treats an unresolved orphan as not-clean (main.rs report()), so dropping it here contradicts that.
+PEM=$(echo "$SUMMARY" | grep -oE '[0-9]+ file\(s\) with unresolved PEM markers' | grep -oE '^[0-9]+')
+if [ "${TOTAL:-0}" -eq 0 ] && [ "${FAILS:-0}" -eq 0 ] && [ "${UNSAFE:-0}" -eq 0 ] && [ "${PEM:-0}" -eq 0 ]; then
   SUMMARY=""
+fi
+
+# exit 1 is how the CLI reports a completed-but-not-clean run, so non-zero alone does not mean failure.
+if [ "$REDACTO_RC" -ne 0 ] && [ -n "$RAW_SUMMARY" ]; then
+  SUMMARY="$RAW_SUMMARY"
+elif [ "$REDACTO_RC" -ne 0 ]; then
+  SUMMARY=$(printf 'redacto: sweep did NOT complete (exit %s) — sinks may be partially redacted.\n%s' \
+    "$REDACTO_RC" "$(printf '%s\n' "$REDACTO_OUT" | head -5)")
 fi
 
 # Guarded because the report below needs it too, and a missing report reads as a clean sweep.
