@@ -26,6 +26,15 @@
   presence of a summary line is what distinguishes the two, and it is captured
   before the zero-count blanking so a real finding is never overwritten by a
   false failure message.
+- **Fixed**: the same crash-reads-as-clean trap on the image half of the hook.
+  `image-carrier-sweep.py`'s output was piped straight into `grep`, and an
+  uncaught exception carries no `image-carrier-sweep` prefix, so a traceback was
+  filtered away and the sweep reported nothing — for the pass that handles
+  screenshot-borne secrets, which no text scan can see. `main()` has a single
+  exit path (`return 0`), so any non-zero status is a crash; output and status
+  are captured separately and the failure is reported with the traceback's last
+  lines. `shellcheck -o all` flags this line as SC2312, the same masked-status
+  family as the SC2155 findings below.
 - **Fixed**: `shellcheck -x` findings in the hook scripts — SC1091 in
   `redacto-log-sweep.sh` (sourcing a sibling by `$DIR`, resolved with
   `source-path=SCRIPTDIR` rather than a literal path, so the directive survives

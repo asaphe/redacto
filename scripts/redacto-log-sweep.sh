@@ -46,7 +46,14 @@ if command -v python3 >/dev/null 2>&1; then
   while IFS= read -r p; do IMAGE_ARGS+=(--transcript "$p"); done < <(redacto_transcript_roots)
   while IFS= read -r p; do IMAGE_ARGS+=(--image-dir "$p"); done < <(redacto_image_cache_paths)
   while IFS= read -r g; do IMAGE_ARGS+=(--exclude "$g"); done < <(redacto_sink_excludes)
-  IMAGE_SUMMARY=$(python3 "$DIR/image-carrier-sweep.py" "${IMAGE_ARGS[@]}" 2>&1 | grep '^image-carrier-sweep')
+  IMAGE_OUT=$(python3 "$DIR/image-carrier-sweep.py" "${IMAGE_ARGS[@]}" 2>&1)
+  IMAGE_RC=$?
+  IMAGE_SUMMARY=$(printf '%s\n' "$IMAGE_OUT" | grep '^image-carrier-sweep')
+  # Same trap as the binary above: main() has one exit path (return 0), so non-zero is a crash, and a traceback carries no prefix to survive the grep.
+  if [ "$IMAGE_RC" -ne 0 ]; then
+    IMAGE_SUMMARY=$(printf 'image-carrier-sweep: did NOT complete (exit %s) — image payloads may still be live.\n%s' \
+      "$IMAGE_RC" "$(printf '%s\n' "$IMAGE_OUT" | tail -5)")
+  fi
 fi
 
 REPORT=$(printf '%s\n%s' "$SUMMARY" "$IMAGE_SUMMARY" | grep -v '^$')
