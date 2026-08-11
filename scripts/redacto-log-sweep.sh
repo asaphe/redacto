@@ -14,6 +14,8 @@ SINKS=()
 while IFS= read -r p; do SINKS+=("$p"); done < <(redacto_sink_paths)
 EXCLUDES=()
 while IFS= read -r g; do EXCLUDES+=(--exclude "$g"); done < <(redacto_sink_excludes)
+# No sinks is a clean outcome, not an error: calling the CLI with no paths would exit non-zero and read as a failed sweep.
+[ ${#SINKS[@]} -eq 0 ] && exit 0
 
 # Output and status captured separately: piping straight into grep discards the exit code, so a crash read as a clean sweep.
 REDACTO_OUT=$("$REDACTO" --write --patterns secrets "${EXCLUDES[@]}" "${SINKS[@]}" 2>&1)
@@ -62,7 +64,8 @@ if [ -n "$REPORT" ]; then
   if command -v python3 >/dev/null 2>&1; then
     printf '%s' "$REPORT" | python3 -c 'import json,sys; print(json.dumps({"systemMessage": sys.stdin.read()}))'
   else
-    ESCAPED=$(printf '%s' "$REPORT" | tr -d '\000-\010\013\014\016-\037' \
+    # Every control character except LF (012), which awk still needs to split on: tab and CR left raw make the JSON invalid.
+    ESCAPED=$(printf '%s' "$REPORT" | tr -d '\000-\011\013-\037' \
       | sed 's/\\/\\\\/g; s/"/\\"/g' | awk '{printf "%s%s", sep, $0; sep="\\n"}')
     printf '{"systemMessage": "%s"}\n' "$ESCAPED"
   fi

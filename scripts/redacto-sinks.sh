@@ -2,14 +2,17 @@
 # Shared sink lists for redacto-log-sweep.sh — see README § How the plugin works.
 
 redacto_sink_paths() {
-  local paths=(
-    "$HOME/.claude/projects"
-    "$HOME/.claude/paste-cache"
-    "$HOME/.claude/file-history"
-    "$HOME/.claude/backups"
-  )
-  # RTK (github.com/rtk-ai/rtk) is optional; its tee mirror is only swept if present.
-  [ -d "$HOME/Library/Application Support/rtk/tee" ] && paths+=("$HOME/Library/Application Support/rtk/tee")
+  local paths=()
+  local d
+  # Guarded like every sink below: the CLI exits 1 on a missing root, which the hook then surfaces as an all-zero sweep.
+  for d in "$HOME/.claude/projects" "$HOME/.claude/paste-cache" \
+           "$HOME/.claude/file-history" "$HOME/.claude/backups"; do
+    [ -d "$d" ] && paths+=("$d")
+  done
+  # RTK (github.com/rtk-ai/rtk) is optional; macOS keeps its tee mirror under Application Support, Linux under XDG_DATA_HOME.
+  for d in "$HOME/Library/Application Support/rtk/tee" "${XDG_DATA_HOME:-$HOME/.local/share}/rtk/tee"; do
+    [ -d "$d" ] && paths+=("$d")
+  done
   # Task-local notes and hook logs, which record verbatim command text.
   [ -d "$HOME/.claude/local" ] && paths+=("$HOME/.claude/local")
   # Session scratchpad — fetched values and raw command dumps land here as ordinary files.
@@ -20,6 +23,8 @@ redacto_sink_paths() {
   for f in "$HOME"/.claude/history.jsonl "$HOME"/.claude/history.jsonl.*; do
     [ -e "$f" ] && paths+=("$f")
   done
+  # Empty is a real outcome now that every root is guarded, and an empty array would expand to one blank argument.
+  [ ${#paths[@]} -eq 0 ] && return 0
   printf '%s\n' "${paths[@]}"
 }
 

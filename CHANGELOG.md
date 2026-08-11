@@ -50,6 +50,27 @@
   included — for a binary a `SessionStart` hook then runs unattended over the
   local log sinks.
 
+- **Fixed**: a fresh install reported an all-zero sweep on every `SessionStart`.
+  `redacto_sink_paths` emitted `paste-cache`, `file-history` and `backups`
+  unconditionally, unlike every other sink beside them. The CLI treats a missing
+  root as trouble and exits 1 with an all-zero summary, and the hook restores the
+  summary whenever the exit is non-zero — so anyone without those directories got
+  a useless message every session, with the `path does not exist` line stripped by
+  the `^redacto:` filter so it did not even say which path. Measured: 5 sink paths
+  of which 3 absent, hook noisy; after, 2 paths and silent. All four sink
+  functions emit byte-identical output on a machine where everything exists.
+- **Fixed**: the RTK tee mirror was swept on macOS only. The path checked is the
+  Application Support convention; a Linux install keeps it under
+  `${XDG_DATA_HOME:-$HOME/.local/share}`, so the guard was simply false there and
+  the mirror went unswept — silent incomplete coverage, which is the failure this
+  plugin exists to prevent. Both paths are checked now.
+- **Fixed**: the no-`python3` fallback emitted invalid JSON. `tr -d
+  '\000-\010\013\014\016-\037'` skips 011 (tab) and 015 (CR), and the `sed`
+  chain escapes only `\` and `"`, so a tab or CR in a swept path produced a
+  systemMessage that `jq` rejects — RFC 8259 forbids bare control characters in a
+  string. The range is now everything except LF, which `awk` still needs to split
+  on. Verified: the old form fails `jq empty` on a tab-and-CR report, the new form
+  passes, and multi-line output still joins with `\n`.
 - **Fixed**: `case_marker_search_covers_sweep_roots` failed open. It returned
   silently when `scripts/redacto-sinks.sh` was absent, so a rename or a move
   would have retired the control while the suite still printed `all controls
