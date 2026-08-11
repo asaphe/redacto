@@ -37,8 +37,9 @@
   family as the SC2155 findings below.
 - **Fixed**: `shellcheck -x` findings in the hook scripts — SC1091 in
   `redacto-log-sweep.sh` (sourcing a sibling by `$DIR`, resolved with
-  `source-path=SCRIPTDIR` rather than a literal path, so the directive survives
-  being vendored elsewhere) and SC2155 twice in `redacto-sinks.sh`, where
+  `source-path=SCRIPTDIR`, which resolves relative to the script's own directory
+  — a literal path would encode one checkout's layout) and SC2155 twice in
+  `redacto-sinks.sh`, where
   `local scratch="/tmp/claude-$(id -u)"` masked the command substitution's exit
   status. Behaviour-neutral: all four sink functions emit byte-identical output
   before and after. `shellcheck -x` now runs in CI beside `bash -n`, which
@@ -49,6 +50,19 @@
   included — for a binary a `SessionStart` hook then runs unattended over the
   local log sinks.
 
+- **Added**: `cargo audit` to CI, inside the required `test` job rather than a
+  job of its own — 61 dependencies shipped with no advisory gate, for a binary a
+  `SessionStart` hook runs unattended with `--write`, so an advisory should block
+  the merge. Installed from source rather than through a third-party action:
+  fetching a prebuilt binary to audit a supply chain is the wrong shape.
+- **Added**: `SECURITY.md` (private reporting via GitHub Security Advisories,
+  and what counts as a vulnerability for a tool whose failure mode is reporting
+  clean when it is not) and `.github/dependabot.yml` covering `cargo` and
+  `github-actions`. Dependabot security alerts were already on; version updates
+  need the config file to exist.
+- **Added**: `permissions: contents: read` on the workflow. The repository
+  default is already read-only, so this is belt-and-braces — it pins the grant at
+  the workflow rather than leaving it to a repository setting that can change.
 - **Added**: `scripts/image-carrier-sweep.py`, wired into the plugin's
   `SessionStart` hook. A secret pasted as a screenshot was invisible to the
   text sweep, and the run reported the corpus clean — the strongest form of
