@@ -160,7 +160,12 @@ claude plugin install redacto@redacto
 ```
 
 The plugin only wires the hook — it calls the `redacto` binary on `PATH`, so
-`cargo install --path .` (or however you install the CLI) is still required.
+`cargo install --locked --path .` (or however you install the CLI) is still
+required. `--locked` matters here: `cargo install` ignores a packaged
+`Cargo.lock` by default and every dependency is specified at major-version
+granularity, so without it all 61 packages re-resolve from crates.io at install
+time, build scripts included — for a binary a `SessionStart` hook then runs
+unattended over the files most likely to hold a pasted secret.
 The whole hook, image sweep included, is a no-op if `redacto` isn't found:
 installing the plugin on its own must never start deleting anything.
 

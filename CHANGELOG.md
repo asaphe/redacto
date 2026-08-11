@@ -2,6 +2,96 @@
 
 ## [Unreleased]
 
+- **Fixed**: a redacting write no longer drops the file's mode. `write_atomically`
+  created the temp file with `std::fs::write` — born with the umask default — and
+  renamed it over the original, so a `0600` log came back `0644`. Measured on a
+  real install: `~/.claude/history.jsonl` and every transcript under
+  `~/.claude/projects` are `0600`, umask is `022`, and a write-temp-then-rename
+  cycle turns `600` into `644`. The sweep was therefore making exactly the files
+  that had held pasted secrets group- and world-readable, every run. The image
+  sweep already preserved mode via `os.fchmod`; nothing in the crate did.
+  Regression test asserts `0o600` as a literal rather than against the mode read
+  back, and fails `left: 420, right: 384` with the fix removed.
+- **Fixed**: the `SessionStart` hook discarded PEM-only findings. Its
+  clear-if-nothing-happened check tested redactions, validation failures and
+  unsafe lines, but not the unresolved-PEM-marker count carried on the same
+  summary line — contradicting `report()`, which counts an unresolved orphan as
+  not-clean and exits 1 for it.
+- **Fixed**: a crashing binary was indistinguishable from a clean sweep. The
+  summary was captured by piping into `grep`, which discards the exit status, and
+  a panic carries no `redacto:` prefix to survive the filter, so every count
+  defaulted to zero and the hook exited 0 with no output. Output and status are
+  captured separately now. Note the subtlety: a non-zero exit is *not* proof of
+  failure, since `report()` exits 1 on a completed-but-not-clean run — the
+  presence of a summary line is what distinguishes the two, and it is captured
+  before the zero-count blanking so a real finding is never overwritten by a
+  false failure message.
+- **Fixed**: the same crash-reads-as-clean trap on the image half of the hook.
+  `image-carrier-sweep.py`'s output was piped straight into `grep`, and an
+  uncaught exception carries no `image-carrier-sweep` prefix, so a traceback was
+  filtered away and the sweep reported nothing — for the pass that handles
+  screenshot-borne secrets, which no text scan can see. `main()` has a single
+  exit path (`return 0`), so any non-zero status is a crash; output and status
+  are captured separately and the failure is reported with the traceback's last
+  lines. `shellcheck -o all` flags this line as SC2312, the same masked-status
+  family as the SC2155 findings below.
+- **Fixed**: `shellcheck -x` findings in the hook scripts — SC1091 in
+  `redacto-log-sweep.sh` (sourcing a sibling by `$DIR`, resolved with
+  `source-path=SCRIPTDIR`, which resolves relative to the script's own directory
+  — a literal path would encode one checkout's layout) and SC2155 twice in
+  `redacto-sinks.sh`, where
+  `local scratch="/tmp/claude-$(id -u)"` masked the command substitution's exit
+  status. Behaviour-neutral: all four sink functions emit byte-identical output
+  before and after. `shellcheck -x` now runs in CI beside `bash -n`, which
+  catches syntax only and passed on all three of these.
+- **Fixed**: the plugin install note recommended `cargo install --path .`
+  without `--locked`, so the packaged `Cargo.lock` was ignored and all 61
+  dependencies re-resolved from crates.io at install time, build scripts
+  included — for a binary a `SessionStart` hook then runs unattended over the
+  local log sinks.
+
+- **Fixed**: a fresh install reported an all-zero sweep on every `SessionStart`.
+  `redacto_sink_paths` emitted `paste-cache`, `file-history` and `backups`
+  unconditionally, unlike every other sink beside them. The CLI treats a missing
+  root as trouble and exits 1 with an all-zero summary, and the hook restores the
+  summary whenever the exit is non-zero — so anyone without those directories got
+  a useless message every session, with the `path does not exist` line stripped by
+  the `^redacto:` filter so it did not even say which path. Measured: 5 sink paths
+  of which 3 absent, hook noisy; after, 2 paths and silent. All four sink
+  functions emit byte-identical output on a machine where everything exists.
+- **Fixed**: the RTK tee mirror was swept on macOS only. The path checked is the
+  Application Support convention; a Linux install keeps it under
+  `${XDG_DATA_HOME:-$HOME/.local/share}`, so the guard was simply false there and
+  the mirror went unswept — silent incomplete coverage, which is the failure this
+  plugin exists to prevent. Both paths are checked now.
+- **Fixed**: the no-`python3` fallback emitted invalid JSON. `tr -d
+  '\000-\010\013\014\016-\037'` skips 011 (tab) and 015 (CR), and the `sed`
+  chain escapes only `\` and `"`, so a tab or CR in a swept path produced a
+  systemMessage that `jq` rejects — RFC 8259 forbids bare control characters in a
+  string. The range is now everything except LF, which `awk` still needs to split
+  on. Verified: the old form fails `jq empty` on a tab-and-CR report, the new form
+  passes, and multi-line output still joins with `\n`.
+- **Fixed**: `case_marker_search_covers_sweep_roots` failed open. It returned
+  silently when `scripts/redacto-sinks.sh` was absent, so a rename or a move
+  would have retired the control while the suite still printed `all controls
+  passed` and exited 0 — the same report-clean-when-it-is-not shape as the hook
+  defects above, this time in the thing that checks them. It now fails with the
+  path it looked in. Verified both ways: with the file hidden, the old code
+  exited 0 and the new code exits 1. It was the only fail-open early return
+  across all 17 controls.
+- **Added**: `cargo audit` to CI, inside the required `test` job rather than a
+  job of its own — 61 dependencies shipped with no advisory gate, for a binary a
+  `SessionStart` hook runs unattended with `--write`, so an advisory should block
+  the merge. Installed from source rather than through a third-party action:
+  fetching a prebuilt binary to audit a supply chain is the wrong shape.
+- **Added**: `SECURITY.md` (private reporting via GitHub Security Advisories,
+  and what counts as a vulnerability for a tool whose failure mode is reporting
+  clean when it is not) and `.github/dependabot.yml` covering `cargo` and
+  `github-actions`. Dependabot security alerts were already on; version updates
+  need the config file to exist.
+- **Added**: `permissions: contents: read` on the workflow. The repository
+  default is already read-only, so this is belt-and-braces — it pins the grant at
+  the workflow rather than leaving it to a repository setting that can change.
 - **Added**: `scripts/image-carrier-sweep.py`, wired into the plugin's
   `SessionStart` hook. A secret pasted as a screenshot was invisible to the
   text sweep, and the run reported the corpus clean — the strongest form of
