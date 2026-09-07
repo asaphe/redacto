@@ -52,7 +52,8 @@ def write_jsonl(path, records):
 
 def run(root, *extra):
     cmd = [sys.executable, SWEEP, "--state-file", os.path.join(root, "state.json")] + list(extra)
-    proc = subprocess.run(cmd, capture_output=True, text=True)
+    # a case that omits --transcript falls back to $HOME/.claude/projects, so HOME must not be the real one
+    proc = subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, HOME=root))
     return proc.returncode, proc.stdout.strip(), proc.stderr.strip()
 
 
@@ -226,7 +227,14 @@ def case_symlink_untouched(root):
         {"type": "image", "source": {"type": "base64", "data": payload, "media_type": "image/png"}}]}}])
     link = os.path.join(proj, "link.jsonl")
     os.symlink(real, link)
+    # without a swept sibling, both checks below also pass when the walk never reached this directory
+    control = os.path.join(proj, "control.jsonl")
+    control_payload = payload_bytes(3000)
+    write_jsonl(control, [{"type": "user", "timestamp": ts(72), "message": {"role": "user", "content": [
+        {"type": "image", "source": {"type": "base64", "data": control_payload, "media_type": "image/png"}}]}}])
     run(root, "--transcript", proj)
+    swept = json.loads(open(control, encoding="utf-8").read())["message"]["content"][0]["source"]["data"]
+    check("positive control: a real transcript beside the symlink is swept", swept != control_payload)
     check("symlinked transcript is still a symlink", os.path.islink(link))
     kept = json.loads(open(real, encoding="utf-8").read())["message"]["content"][0]["source"]["data"]
     check("symlink target is not silently rewritten", kept == payload)
@@ -241,7 +249,10 @@ def case_naive_timestamp_is_utc(root):
     payload = payload_bytes(3000)
     write_jsonl(path, [{"type": "user", "timestamp": naive, "message": {"role": "user", "content": [
         {"type": "image", "source": {"type": "base64", "data": payload, "media_type": "image/png"}}]}}])
-    env = dict(os.environ, TZ="Asia/Jerusalem")
+    # mtime is the fallback epoch, so ageing it past the window makes ISO parsing that breaks outright strip the record
+    stale = (NOW - datetime.timedelta(hours=72)).timestamp()
+    os.utime(path, (stale, stale))
+    env = dict(os.environ, TZ="Asia/Jerusalem", HOME=root)
     cmd = [sys.executable, SWEEP, "--state-file", os.path.join(root, "naive-state.json"),
            "--transcript", proj]
     subprocess.run(cmd, capture_output=True, text=True, env=env)
@@ -254,9 +265,10 @@ def case_argument_hygiene(root):
     os.makedirs(proj)
     rc, _out, err = run(root, "--transcript", proj, "--max-age-hours", "-100")
     check("negative age window is rejected", rc != 0 and ">= 0" in err, err)
+    # --transcript is set but --image-dir is not, and that falls back to $HOME/.claude/image-cache
     cwd_state = subprocess.run(
         [sys.executable, SWEEP, "--state-file", "bare-state.json", "--transcript", proj],
-        capture_output=True, text=True, cwd=root)
+        capture_output=True, text=True, cwd=root, env=dict(os.environ, HOME=root))
     check("a bare --state-file filename does not crash", cwd_state.returncode == 0, cwd_state.stderr)
 
 
@@ -369,14 +381,40 @@ def case_unwritable_dir_does_not_sink_the_run(root):
 def case_marker_search_covers_sweep_roots(root):
     """redacto_sink_excludes must emit globs for the roots the sweep actually walks."""
     sinks = os.path.join(os.path.dirname(HERE), "scripts", "redacto-sinks.sh")
-    found = os.path.exists(sinks)
-    # Fails rather than returns: a silent skip reports a full pass with this control never run.
-    check("redacto-sinks.sh is where this control looks for it", found, sinks)
-    if not found:
+    # Returning on absence would pass this case by never running it, which is how the coupling breaks unnoticed.
+    check("redacto-sinks.sh is where this case expects it", os.path.exists(sinks), sinks)
+    if not os.path.exists(sinks):
         return
     text = open(sinks, encoding="utf-8").read()
     for needed in ("$HOME/.claude/projects", "$HOME/.claude/image-cache"):
         check("marker search covers %s" % needed, needed in text.split("redacto_sink_excludes")[1])
+
+
+def case_state_write_is_durable(root):
+    """temp-then-replace is only as durable as the flush before it. sweep_transcript fsyncs and
+    save_state did not, so a crash between the page-cache write and the disk write could leave a
+    truncated state file. Asserted on the syscall rather than on the source text, so it fails
+    when the behaviour goes rather than when the line moves."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("carrier_sweep_probe", SWEEP)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    synced, replaced_after = [], []
+    real_fsync, real_replace = os.fsync, os.replace
+    mod.os.fsync = lambda fd: (synced.append(fd), real_fsync(fd))[1]
+    mod.os.replace = lambda a, b: (replaced_after.append(list(synced)), real_replace(a, b))[1]
+    try:
+        target = os.path.join(root, "state", "s.json")
+        mod.save_state(target, {"version": 1, "files": {"a": [1, 2]}})
+    finally:
+        mod.os.fsync, mod.os.replace = real_fsync, real_replace
+
+    check("save_state fsyncs the state file", len(synced) >= 1)
+    check("the fsync happens before the replace, not after",
+          bool(replaced_after) and len(replaced_after[0]) >= 1, repr(replaced_after))
+    check("the state file it wrote is readable", json.load(open(target, encoding="utf-8"))["version"] == 1)
 
 
 def case_image_cache(root):
@@ -399,27 +437,35 @@ def case_image_cache(root):
 def main():
     raw = base64.b64decode(PLACEHOLDER)
     check("placeholder is a 96-char valid PNG", len(PLACEHOLDER) == 96 and raw[:8] == b"\x89PNG\r\n\x1a\n")
+    cases = (
+        case_transcript,
+        case_live_window,
+        case_structural_guard,
+        case_exempt,
+        case_escaped_solidus,
+        case_nan_window,
+        case_orphan_reaping_respects_excludes,
+        case_nested_cache_dirs,
+        case_unwritable_dir_does_not_sink_the_run,
+        case_marker_search_covers_sweep_roots,
+        case_cache_is_images_only,
+        case_unrecognised_payload_is_not_stamped,
+        case_symlink_untouched,
+        case_naive_timestamp_is_utc,
+        case_argument_hygiene,
+        case_errors_reach_stdout,
+        case_state_write_is_durable,
+        case_image_cache,
+    )
     root = tempfile.mkdtemp(prefix="image-sweep-probe-")
     try:
-        case_transcript(root)
-        case_live_window(root)
-        case_structural_guard(root)
-        case_exempt(root)
-        case_escaped_solidus(root)
-        case_nan_window(root)
-        case_orphan_reaping_respects_excludes(root)
-        case_nested_cache_dirs(root)
-        case_unwritable_dir_does_not_sink_the_run(root)
-        case_marker_search_covers_sweep_roots(root)
-        case_cache_is_images_only(root)
-        case_unrecognised_payload_is_not_stamped(root)
-        case_symlink_untouched(root)
-        case_naive_timestamp_is_utc(root)
-        case_argument_hygiene(root)
-        case_errors_reach_stdout(root)
-        case_image_cache(root)
+        for case in cases:
+            case(root)
     finally:
         shutil.rmtree(root, ignore_errors=True)
+    # A case defined but left out of the tuple above never runs, and the suite still reports all-pass.
+    unregistered = {k for k in globals() if k.startswith("case_")} - {c.__name__ for c in cases}
+    check("every case_* function is registered above", not unregistered, ", ".join(sorted(unregistered)))
     print("\n%d control(s) failed" % len(FAILURES) if FAILURES else "\nall controls passed")
     return 1 if FAILURES else 0
 

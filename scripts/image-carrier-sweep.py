@@ -335,6 +335,9 @@ def save_state(path, state):
     fd, tmp = tempfile.mkstemp(dir=parent, prefix=".state-")
     with os.fdopen(fd, "w", encoding="utf-8") as fh:
         json.dump(state, fh)
+        # Matches sweep_transcript: closing flushes to the page cache, which os.replace does not make durable.
+        fh.flush()
+        os.fsync(fh.fileno())
     os.replace(tmp, path)
 
 
