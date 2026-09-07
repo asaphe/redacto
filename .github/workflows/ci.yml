@@ -32,7 +32,14 @@ jobs:
         run: |
           shellcheck --version >/dev/null 2>&1 || { sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck; }
           shellcheck -x scripts/*.sh
-      - run: python3 tests/probe-image-carrier-sweep.py
+      # Globbed rather than listed, so a probe added later cannot pass CI by never running.
+      - name: hook probes
+        run: |
+          shopt -s nullglob
+          probes=(tests/probe-*.py)
+          [ "${#probes[@]}" -gt 0 ] || { echo "no probe suites found"; exit 1; }
+          for p in "${probes[@]}"; do echo "== $p"; python3 "$p"; done
+        shell: bash
       # In the required job, not a separate one: an advisory against a binary that runs unattended with --write should block the merge.
       - name: cargo audit
         run: |

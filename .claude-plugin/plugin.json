@@ -1,7 +1,7 @@
 {
   "name": "redacto",
   "description": "Periodic SessionStart sweep that redacts secrets from your local Claude Code logs (session transcripts, history.jsonl, paste-cache, file-history, backups) using the redacto CLI. Requires redacto on PATH — see README for install.",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "author": {
     "name": "asaphe"
   },

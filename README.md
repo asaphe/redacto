@@ -46,6 +46,40 @@ Without `--write`, redacto reports what it would redact and changes
 nothing. Files modified within the last 5 minutes (`--live-window-secs`) are
 skipped as possibly still being written.
 
+### Three ways a scan reports clean when it did not run
+
+Each of these produces a clean-looking summary rather than an error, so
+nothing prompts you to look twice. They matter most when the scan is the gate
+before publishing something.
+
+**A file that once scanned clean is skipped, even under wider patterns.** The
+watermark records a path when the scan found nothing (or when `--write`
+finished redacting it), keyed on mtime and size. A later scan of that file,
+unmodified, is skipped as unchanged — including a scan you widened. Scanning
+with `--patterns secrets`, then re-scanning the same file with `--patterns
+all`, reports clean: the second run never opened it, and the infra IDs a fresh
+state dir finds are invisible. The same applies after upgrading to a release
+that adds a pattern.
+
+A file that *matched* in report-only mode is not recorded, so re-scanning it
+does re-scan. The trap is one-directional and lands on exactly the files you
+have most reason to believe are fine.
+
+Pass `--state-dir "$(mktemp -d)"` whenever the pattern set changed, or whenever
+the answer needs to come from the file rather than from a previous verdict.
+
+**`--live-window-secs 0` is required when scanning a file you just wrote.**
+The default 300-second window skips recently-modified files, so scanning
+something you created seconds ago reports zero findings because it never
+opened it. A pre-commit or pre-publish check must pass `--live-window-secs 0`,
+or it silently approves the file it was written to inspect.
+
+**A known-benign value is subtracted before the report.** `KNOWN_BENIGN_VALUES`
+removes the canonical AWS documentation key and similar published examples. A
+control probe built from one of those values therefore returns "clean" whether
+or not the scanner works — the probe proves nothing, and the null reads as a
+pass. Build controls from a freshly generated value instead.
+
 `--patterns` defaults to `secrets` — real-world testing against a large
 personal log corpus confirmed the infra-identifier patterns are
 appropriate for sanitizing content *before sharing it* (their original
