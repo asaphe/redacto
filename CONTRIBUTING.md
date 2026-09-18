@@ -40,5 +40,6 @@ the latter rather than guessing).
 ## Reporting a security issue
 
 If you find a pattern that fails to redact a real secret, or a case where
-redaction could corrupt a file, please open an issue — this is a security
+redaction could corrupt a file, report it privately as described in
+[SECURITY.md](SECURITY.md) rather than in a public issue — this is a security
 tool, so false negatives and corruption bugs are treated as high priority.

@@ -1,0 +1,22 @@
+# Test fixtures inside #[cfg(test)] functions: a secret scanner's own tests have to contain secret-shaped literals.
+01847f3f087cc12269c72ddb97c79b09faaa86f5:src/patterns/secrets.rs:jwt:702
+01847f3f087cc12269c72ddb97c79b09faaa86f5:src/patterns/secrets.rs:slack-legacy-token:455
+01847f3f087cc12269c72ddb97c79b09faaa86f5:src/patterns/secrets.rs:slack-legacy-workspace-token:383
+01847f3f087cc12269c72ddb97c79b09faaa86f5:src/patterns/secrets.rs:slack-legacy-workspace-token:416
+01847f3f087cc12269c72ddb97c79b09faaa86f5:src/patterns/secrets.rs:slack-legacy-workspace-token:467
+01847f3f087cc12269c72ddb97c79b09faaa86f5:src/patterns/secrets.rs:slack-legacy-workspace-token:470
+01847f3f087cc12269c72ddb97c79b09faaa86f5:src/patterns/secrets.rs:slack-legacy-workspace-token:652
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/engine/redact.rs:aws-access-token:103
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/engine/redact.rs:aws-access-token:152
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/engine/redact.rs:aws-access-token:168
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/patterns/secrets.rs:jwt:69
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/patterns/secrets.rs:jwt:82
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/structural/pem.rs:private-key:153
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/structural/pem.rs:private-key:162
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/structural/pem.rs:private-key:174
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/structural/pem.rs:private-key:208
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/structural/pem.rs:private-key:221
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/structural/pem.rs:private-key:232
+0984754f0a267c82395dd689d8ddee6ecefeedee:src/structural/pem.rs:private-key:258
+21af8f70fdfc7a9cf0c37ea305aededcd777b963:src/patterns/secrets.rs:slack-app-token:227
+c8ada1d9ab7ad2e65a0ae8c44486cdc6e4902512:src/engine/scan.rs:aws-access-token:301
