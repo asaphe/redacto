@@ -1,6 +1,17 @@
 # Changelog
 
-## [Unreleased]
+## v0.2.1
+
+- **Changed**: the crate declares `rust-version = "1.88"`, and CI builds on 1.88.
+  Measured rather than inferred: 1.88 builds, and 1.87 fails because `globset`
+  0.4.20 requires 1.88.
+- **Changed**: `redacto --version` reports the release version. The crate version
+  had stayed at 0.1.0 through the 0.2.0 release.
+- **Changed**: dependency updates — `clap` 4.6.6, `globset` 0.4.20, `toml` 1.1.6.
+- **CI**: actions pinned by commit SHA, a full-history gitleaks scan, and a checkout
+  that does not persist the token.
+
+## v0.2.0
 
 - **Fixed**: a redacting write no longer drops the file's mode. `write_atomically`
   created the temp file with `std::fs::write` — born with the umask default — and
