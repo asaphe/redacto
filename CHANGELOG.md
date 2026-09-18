@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.2.2
+
+- **Fixed**: the sweep rewrote git checkouts under its roots. A clone in the
+  session scratchpad had its secret-shaped test fixtures redacted in place, and a
+  `git add -A` would then have staged the damage. Any directory holding a `.git`
+  entry below a root is now excluded from both stages, the same way a
+  `.redacto-exempt` marker is; a root that is itself a repository is still swept.
+- **Fixed**: `.redacto-exempt` markers were only searched 5 levels deep, and the
+  session scratchpad's own prefix takes three of them, so a marker two directories
+  into the scratchpad was silently ignored. Markers and work trees are now searched
+  8 levels deep.
+
 ## v0.2.1
 
 - **Changed**: the crate declares `rust-version = "1.88"`, and CI builds on 1.88.
