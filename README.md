@@ -308,9 +308,18 @@ fixture with a deliberate inline image keeps that payload too. A marker that
 covered only the text stage would quietly destroy exactly the fixtures it
 appeared to protect.
 
-Markers are searched up to 5 levels below each of `~/.claude/projects`,
-`~/.claude/image-cache`, `~/.claude/local` and the session scratchpad — every
-root either stage walks.
+A git work tree below a root is exempt the same way, with no marker: any
+directory holding a `.git` entry — a clone's directory or a worktree's file —
+becomes an exclude glob for its subtree. A checkout's tracked files came from
+a remote, so a secret in one has already left the machine, and rewriting them
+only corrupts the checkout — a scanner's own test fixtures first. The cost is
+that an untracked file written into a checkout is not swept either. A root
+that is itself a repository is still swept; only checkouts below it are skipped.
+
+Markers and work trees are searched up to 8 levels below each of
+`~/.claude/projects`, `~/.claude/image-cache`, `~/.claude/local` and the
+session scratchpad — every root either stage walks. The scratchpad's own
+project and session directories already take three of those levels.
 `image-carrier-sweep.py` also takes `--exclude GLOB` directly (repeatable,
 full-path match) when run standalone.
 

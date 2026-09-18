@@ -39,13 +39,16 @@ redacto_sink_excludes() {
     '*/__pycache__/*'
     '*/.ruff_cache/*'
   )
-  # A .redacto-exempt file opts its subtree out — see README § Exempting a fixture directory.
-  local root marker
+  # A .redacto-exempt file or a git work tree below a root opts its subtree out — see README § Exempting a fixture directory.
+  local root found
   for root in "$HOME/.claude/local" "$HOME/.claude/projects" "$HOME/.claude/image-cache" "/tmp/claude-$(id -u)"; do
     [ -d "$root" ] || continue
-    while IFS= read -r marker; do
-      [ -n "$marker" ] && globs+=("$(dirname "$marker")/*")
-    done < <(find "$root" -maxdepth 5 -name .redacto-exempt -type f 2>/dev/null)
+    while IFS= read -r found; do
+      [ -n "$found" ] && globs+=("$(dirname "$found")/*")
+    done < <(
+      find "$root" -maxdepth 8 -name .redacto-exempt -type f 2>/dev/null
+      find "$root" -mindepth 2 -maxdepth 8 -name .git -prune 2>/dev/null
+    )
   done
   printf '%s\n' "${globs[@]}"
 }

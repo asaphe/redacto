@@ -408,6 +408,53 @@ def case_real_sink_list_emits_no_phantom_empty_path(root):
     check("no blank line is emitted as a sink path", "" not in proc.stdout.splitlines(), repr(proc.stdout))
 
 
+def _real_excludes(home):
+    return subprocess.run(
+        [BASH, "-c", 'source "$1"; redacto_sink_excludes', "_", SINKS],
+        capture_output=True, text=True, env=sink_env(home),
+    ).stdout.splitlines()
+
+
+def case_real_excludes_skip_git_work_trees(root):
+    """A checkout under a sink is not a log: rewriting it corrupted a scanner's own test
+    fixtures in a clone under the session scratchpad. A clone's .git is a directory and a
+    worktree's is a file, and the scratchpad's own prefix already spends three levels."""
+    home = os.path.join(root, "home")
+    local = os.path.join(home, ".claude", "local")
+    clone = os.path.join(local, "clone")
+    worktree = os.path.join(local, "wt")
+    deep = os.path.join(local, "slug", "session", "scratchpad", "repos", "deep")
+    notes = os.path.join(local, "notes")
+    for d in (os.path.join(clone, ".git"), worktree, os.path.join(deep, ".git"), notes):
+        os.makedirs(d)
+    with open(os.path.join(worktree, ".git"), "w", encoding="utf-8") as fh:
+        fh.write("gitdir: /elsewhere/.git/worktrees/wt\n")
+    globs = _real_excludes(home)
+    check("a clone below a root is excluded", clone + "/*" in globs, "\n".join(globs))
+    check("a worktree (.git file) below a root is excluded", worktree + "/*" in globs, "\n".join(globs))
+    check("a work tree at scratchpad depth is found", deep + "/*" in globs, "\n".join(globs))
+    check("control: a plain directory is still swept", notes + "/*" not in globs, "\n".join(globs))
+
+
+def case_real_excludes_still_sweep_a_root_that_is_a_work_tree(root):
+    """mindepth 2: a root that is itself a repository holds local-only content, so only
+    checkouts below it are skipped — never the root."""
+    home = os.path.join(root, "home")
+    local = os.path.join(home, ".claude", "local")
+    os.makedirs(os.path.join(local, ".git"))
+    globs = _real_excludes(home)
+    check("a root with its own .git is not excluded", local + "/*" not in globs, "\n".join(globs))
+
+
+def case_real_excludes_find_a_marker_at_scratchpad_depth(root):
+    home = os.path.join(root, "home")
+    fixtures = os.path.join(home, ".claude", "local", "slug", "session", "scratchpad", "a", "fixtures")
+    os.makedirs(fixtures)
+    open(os.path.join(fixtures, ".redacto-exempt"), "w").close()
+    globs = _real_excludes(home)
+    check("a .redacto-exempt marker six levels down is honored", fixtures + "/*" in globs, "\n".join(globs))
+
+
 def main():
     cases = [v for k, v in sorted(globals().items()) if k.startswith("case_")]
     for case in cases:
