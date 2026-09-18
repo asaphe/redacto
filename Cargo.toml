@@ -1,7 +1,8 @@
 [package]
 name = "redacto"
-version = "0.1.0"
+version = "0.2.1"
 edition = "2024"
+rust-version = "1.88"
 description = "Redacts secrets and sanitizes infra identifiers from log/output files in place — safely, repeatedly, with validity-gated writes."
 license = "Apache-2.0"
 repository = "https://github.com/asaphe/redacto"

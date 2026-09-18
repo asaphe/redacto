@@ -33,6 +33,11 @@ jobs:
       - run: cargo fmt --all --check
       - run: cargo clippy --all-targets -- -D warnings
       - run: cargo test --all
+      # Cargo.toml's rust-version is a promise nothing else checks; a dependency bump can raise the real floor silently.
+      - name: MSRV build
+        run: |
+          rustup toolchain install 1.88.0 --profile minimal
+          cargo +1.88.0 check --locked --all-targets
       - run: bash -n scripts/redacto-log-sweep.sh scripts/redacto-sinks.sh
       # bash -n catches syntax only — every SC1091/SC2155 finding this gate replaced had passed it.
       - name: shellcheck
