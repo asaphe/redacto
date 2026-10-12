@@ -7,7 +7,7 @@
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/redacto-log-sweep.sh",
-            "timeout": 60
+            "timeout": 30
           }
         ]
       }

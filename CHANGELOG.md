@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.2.3
+
+- **Fixed**: the session-start sweep had a 60-second hook timeout and a median
+  run of about 23 seconds, so a slow machine held every new session for up to a
+  minute. The hook now times out at 30 seconds. Stopping a sweep early is safe:
+  each file is written through a temp file and a rename, and the per-file
+  watermark lets the next session continue where this one stopped.
+
 ## v0.2.2
 
 - **Fixed**: the sweep rewrote git checkouts under its roots. A clone in the
