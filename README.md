@@ -231,6 +231,10 @@ stale count reads as a coverage claim. Note the third list is narrower than the
 first: `history.jsonl` is a `.jsonl` file but is not image-swept, because images
 are inlined into session transcripts and nothing else.
 
+The `SessionStart` hook runs the sweep in the background (`"async": true` in
+`hooks/hooks.json`), so a new session never waits on it; the hook's 120-second
+timeout still bounds the run.
+
 ### The image carrier
 
 A secret pasted or screenshotted into a session is invisible to a text
