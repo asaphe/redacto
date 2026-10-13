@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.2.4
+
+- **Fixed**: the session-start sweep still blocked every new session, and its
+  median run of about 23 seconds left little room under the 30-second timeout,
+  so a busy machine often stopped it part-way. The hook now runs in the
+  background (`async`), so a session starts at once, and its timeout is 120
+  seconds. A sweep stopped at the timeout is still safe for the reasons given
+  under v0.2.3.
+
 ## v0.2.3
 
 - **Fixed**: the session-start sweep had a 60-second hook timeout and a median
