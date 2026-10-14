@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Added**: `password-assignment`, the first key-anchored secret rule. A quoted
+  value of 8+ characters after a `password`, `passwd` or `pwd` key and `=` or `:`
+  is redacted, keeping the key and quotes; both sides of a Terraform
+  `"old" -> "new"` update are redacted. It closes a measured miss: a database
+  password printed in plain text by `terraform show` of a `terraform_data`
+  whose `output` mirrors its input passed every token rule. Templates,
+  placeholders, `(sensitive value)` and unquoted values are left alone.
+
 ## v0.2.4
 
 - **Fixed**: the session-start sweep still blocked every new session, and its

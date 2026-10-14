@@ -1,4 +1,4 @@
-use regex::Regex;
+use regex::{Captures, Regex};
 use std::sync::LazyLock;
 
 use super::Pattern;
@@ -94,6 +94,27 @@ static NPM_ACCESS_TOKEN_RE: LazyLock<Regex> =
 static DOCKER_PAT_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bdckr_pat_[0-9a-zA-Z_-]{27}").unwrap());
 
+// Key-anchored, unlike every token rule above: a password has no shape, so only its key names it, and the closing quote — not a length — ends the value. Values holding whitespace or any of `$ { < ( [ % * \` are templates, placeholders, Terraform's `(sensitive value)` or an earlier redaction, and are left alone; see README § Built-in patterns.
+static PASSWORD_ASSIGNMENT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)\b((?:[a-z0-9]+[_-])*(?:password|passwd|pwd)["']?[ \t]*[:=][ \t]*)(?:"([^"\s$<{(\[%*\\]{8,})"(?:([ \t]*->[ \t]*)"([^"\s$<{(\[%*\\]{8,})")?|'([^'\s$<{(\[%*\\]{8,})')"#,
+    )
+    .unwrap()
+});
+
+// Keeps the key and the quotes so the line still reads; a Terraform `"old" -> "new"` update loses both values.
+fn redact_password_assignment(c: &Captures) -> String {
+    const R: &str = "[REDACTED-password-assignment]";
+    let key = &c[1];
+    if c.get(5).is_some() {
+        return format!("{key}'{R}'");
+    }
+    match c.get(3) {
+        Some(arrow) => format!("{key}\"{R}\"{}\"{R}\"", arrow.as_str()),
+        None => format!("{key}\"{R}\""),
+    }
+}
+
 // v0.1 high-confidence subset validated against real data — see README for what's deferred and why.
 pub fn secret_patterns() -> Vec<Pattern> {
     vec![
@@ -124,6 +145,11 @@ pub fn secret_patterns() -> Vec<Pattern> {
         Pattern::simple("anthropic-api-key", &ANTHROPIC_API_KEY_RE),
         Pattern::simple("npm-access-token", &NPM_ACCESS_TOKEN_RE),
         Pattern::simple("docker-pat", &DOCKER_PAT_RE),
+        Pattern::with_fn(
+            "password-assignment",
+            &PASSWORD_ASSIGNMENT_RE,
+            redact_password_assignment,
+        ),
     ]
 }
 
@@ -704,5 +730,95 @@ mod tests {
         let (out, count) = pattern.apply(&text);
         assert_eq!(count, 1);
         assert_eq!(out, "GET /api/v1/verify/[REDACTED-jwt]?ok=1");
+    }
+
+    const PW: &str = "[REDACTED-password-assignment]";
+
+    fn redact_pw(text: &str) -> (String, usize) {
+        let (out, n) = pattern_for("password-assignment").apply(text);
+        (out.into_owned(), n)
+    }
+
+    // The shape that leaked: `terraform show` of a destroyed terraform_data whose output mirrors its input unmarked.
+    #[test]
+    fn password_in_a_terraform_plan_object_is_redacted_and_the_rest_kept() {
+        let text = r#"      - output = { password = "mockQ9v2mTz8pL_x.1", user = "default", host = "abc123.us-east-1.vpce.aws.clickhouse.cloud" } -> null"#;
+        let (out, n) = redact_pw(text);
+        assert_eq!(n, 1);
+        assert_eq!(
+            out,
+            format!(
+                r#"      - output = {{ password = "{PW}", user = "default", host = "abc123.us-east-1.vpce.aws.clickhouse.cloud" }} -> null"#
+            )
+        );
+    }
+
+    #[test]
+    fn a_terraform_update_loses_both_the_old_and_the_new_value() {
+        let (out, n) = redact_pw(r#"  ~ password = "mockOldValue123" -> "mockNewValue456""#);
+        assert_eq!(n, 1);
+        assert_eq!(out, format!(r#"  ~ password = "{PW}" -> "{PW}""#));
+    }
+
+    #[test]
+    fn password_keys_in_hcl_yaml_json_and_single_quotes_are_covered() {
+        for (text, want) in [
+            (
+                r#"root_password = "mockQ9v2mTz8pL""#.to_string(),
+                format!(r#"root_password = "{PW}""#),
+            ),
+            (
+                r#"  password: "mockQ9v2mTz8pL""#.to_string(),
+                format!(r#"  password: "{PW}""#),
+            ),
+            (
+                r#"{"password": "mockQ9v2mTz8pL"}"#.to_string(),
+                format!(r#"{{"password": "{PW}"}}"#),
+            ),
+            (
+                r#"DB_PASSWORD="mockQ9v2mTz8pL""#.to_string(),
+                format!(r#"DB_PASSWORD="{PW}""#),
+            ),
+            (
+                "passwd='mockQ9v2mTz8pL'".to_string(),
+                format!("passwd='{PW}'"),
+            ),
+            (
+                r#"admin-pwd = "mockQ9v2mTz8pL""#.to_string(),
+                format!(r#"admin-pwd = "{PW}""#),
+            ),
+        ] {
+            let (out, n) = redact_pw(&text);
+            assert_eq!((out.as_str(), n), (want.as_str(), 1), "{text}");
+        }
+    }
+
+    // Each of these would be a destructive rewrite of text that holds no secret.
+    #[test]
+    fn templates_placeholders_and_non_password_keys_are_left_alone() {
+        for text in [
+            r#"password = "${var.root_password}""#,
+            r#"password = "<plaintext>""#,
+            "password = (sensitive value)",
+            r#"password = "short""#,
+            r#"password = "has a space in it""#,
+            r#"password = "%(password)s""#,
+            r#"password = "$ROOT_PASSWORD""#,
+            r#"password = "{{ .Values.pw }}""#,
+            r#"password = "*********""#,
+            r#"password_hash = "mockQ9v2mTz8pL""#,
+            r#"mypassword = "mockQ9v2mTz8pL""#,
+            "DB_PASSWORD=mockQ9v2mTz8pL",
+            "password = mockQ9v2mTz8pL",
+            "set the password to something long",
+        ] {
+            assert_eq!(redact_pw(text).1, 0, "{text}");
+        }
+    }
+
+    #[test]
+    fn a_redacted_password_is_not_redacted_again() {
+        let (once, _) = redact_pw(r#"password = "mockQ9v2mTz8pL""#);
+        assert_eq!(redact_pw(&once), (once.clone(), 0));
     }
 }
