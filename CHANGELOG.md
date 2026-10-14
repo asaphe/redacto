@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.5
 
 - **Added**: `password-assignment`, the first key-anchored secret rule. A quoted
   value of 8+ characters after a `password`, `passwd` or `pwd` key and `=` or `:`
