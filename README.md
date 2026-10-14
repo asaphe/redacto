@@ -120,6 +120,20 @@ app/refresh and fine-grained tokens, Google API keys, Anthropic API keys, npm
 access tokens, Docker Hub PATs, Stripe access tokens, Slack webhook URLs, plus
 one project-specific ClickHouse Cloud API key rule.
 
+One rule is key-anchored instead of token-shaped: `password-assignment`. A
+password has no shape of its own, so it is found by its key — `password`,
+`passwd` or `pwd`, optionally after a `word_` or `word-` prefix — followed by
+`=` or `:` and a quoted value of 8 or more characters. The closing quote ends
+the value, so there is no length to guess, and only the value is replaced; the
+key and the quotes stay, and a Terraform `"old" -> "new"` update loses both
+values. It exists for the case token rules cannot see: a database password
+printed by `terraform show` or a plan (`output = { password = "…", user = … }`).
+A value holding whitespace or any of `$ { < ( [ % * \` is left alone, which
+skips `${var.x}`, `<plaintext>`, `(sensitive value)`, format strings and an
+earlier redaction; an unquoted value (`DB_PASSWORD=…`) is not matched. It does
+fire on fake passwords in test fixtures, which in a swept transcript costs
+nothing and in a pre-commit scan is a finding to read and dismiss.
+
 Every prefixed rule is left-anchored. That is stricter than gitleaks,
 deliberately: gitleaks reports findings for a human to triage, whereas this
 tool rewrites the file, so a loose bound is a silent unrecoverable edit rather
@@ -159,7 +173,9 @@ discussing secret detection, never as an actual leaked credential.
 **Deliberately deferred** (documented, not hidden): `curl-auth-header` and
 `linkedin-client-id` (gitleaks' real rules are complex multi-branch
 parsers — not yet safely translated), a `generic-api-key` keyword-context
-heuristic rule, a built-in daemon/watch mode (use an external
+heuristic rule (unlike `password-assignment`, its keywords are broad and its
+value has no delimiter, so it leans on the entropy gate this crate lacks), a
+built-in daemon/watch mode (use an external
 cron/launchd invocation instead — that's what the watermark is for), and
 Homebrew/crates.io publishing automation.
 
