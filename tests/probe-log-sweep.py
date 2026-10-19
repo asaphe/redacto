@@ -63,7 +63,13 @@ def stage(root, stdout="", stderr="", rc=0, image_body=None, sink_paths=("/sink-
         )
     write_exec(
         os.path.join(root, "stub-redacto"),
-        "#!/usr/bin/env bash\ntouch %s\nprintf '%%s' %s\nprintf '%%s' %s >&2\nexit %d\n"
+        "#!/usr/bin/env bash\ntouch %s\n"
+        "BUMP=0\n"
+        "[ -n \"$STUB_SKIP_CONTROL\" ] || for a in \"$@\"; do case \"$a\" in */known-positive.txt) printf '[REDACTED]\\n' > \"$a\"; BUMP=3 ;; esac; done\n"
+        "OUT=%s\n"
+        # A real run counts the control's three redactions in its total, which the hook subtracts again.
+        "if [[ $OUT =~ ([0-9]+)\\ total ]]; then N=${BASH_REMATCH[1]}; OUT=${OUT/$N total/$((N + BUMP)) total}; fi\n"
+        "printf '%%s' \"$OUT\"\nprintf '%%s' %s >&2\nexit %d\n"
         % (
             _q(os.path.join(root, "invoked")),
             _q(stdout + "\n" if stdout else ""),
@@ -239,6 +245,16 @@ def case_root_error_names_the_path(root):
     check("a failed sink is reported at all", msg is not None, repr(out))
     check("the failing path is named", msg is not None and "/absent-sink" in msg, repr(msg))
     check("it does not read as a clean no-op", msg is not None and msg.strip() != CLEAN_SUMMARY, repr(msg))
+
+
+def case_unredacted_control_fails_loudly(root):
+    """A stub that leaves the control file alone stands for a binary whose rules never fired."""
+    sd = stage(root, stdout=CLEAN_SUMMARY, rc=0)
+    rc, out, err = run(root, sd, env_extra={"STUB_SKIP_CONTROL": "1"})
+    msg = message(out)
+    check("an unredacted control is reported, not silent", msg is not None and "CONTROL FAILED" in msg, repr(out))
+    check("an unredacted control exits non-zero", rc != 0, repr(rc))
+    check("an unredacted control also writes stderr", "CONTROL FAILED" in err, repr(err))
 
 
 def case_crash_is_loud(root):

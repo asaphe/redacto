@@ -88,6 +88,16 @@ static GOOGLE_API_KEY_RE: LazyLock<Regex> =
 static ANTHROPIC_API_KEY_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bsk-ant-(?:api03|admin01)-[0-9a-zA-Z_-]{93}AA").unwrap());
 
+// Open-ended tail on purpose: OpenAI key bodies vary in length, and a cap would leave the end of a live key in the file; the 40-char floor keeps kebab-case prose like `sk-proj-quarterly-roadmap` from matching.
+static OPENAI_ADMIN_KEY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bsk-admin-[0-9a-zA-Z_-]{40,}").unwrap());
+
+static OPENAI_SERVICE_ACCOUNT_KEY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bsk-svcacct-[0-9a-zA-Z_-]{40,}").unwrap());
+
+static OPENAI_PROJECT_KEY_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"\bsk-proj-[0-9a-zA-Z_-]{40,}").unwrap());
+
 static NPM_ACCESS_TOKEN_RE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\bnpm_[0-9a-zA-Z]{36}").unwrap());
 
@@ -143,6 +153,9 @@ pub fn secret_patterns() -> Vec<Pattern> {
         Pattern::simple("slack-app-token", &SLACK_APP_TOKEN_RE),
         Pattern::simple("google-api-key", &GOOGLE_API_KEY_RE),
         Pattern::simple("anthropic-api-key", &ANTHROPIC_API_KEY_RE),
+        Pattern::simple("openai-admin-key", &OPENAI_ADMIN_KEY_RE),
+        Pattern::simple("openai-service-account-key", &OPENAI_SERVICE_ACCOUNT_KEY_RE),
+        Pattern::simple("openai-project-key", &OPENAI_PROJECT_KEY_RE),
         Pattern::simple("npm-access-token", &NPM_ACCESS_TOKEN_RE),
         Pattern::simple("docker-pat", &DOCKER_PAT_RE),
         Pattern::with_fn(
@@ -344,6 +357,44 @@ mod tests {
         );
         let (_, c) = pattern_for("anthropic-api-key").apply(&format!("sk-ant-admin01-{body}AA"));
         assert_eq!(c, 1, "admin01 keys are as live as api03 keys");
+    }
+
+    #[test]
+    fn openai_style_keys_cover_each_prefix() {
+        let body = format!("{B36}-_{}", &B36[..2]);
+        assert_eq!(body.len(), 40);
+        for (id, prefix) in [
+            ("openai-admin-key", "sk-admin-"),
+            ("openai-service-account-key", "sk-svcacct-"),
+            ("openai-project-key", "sk-proj-"),
+        ] {
+            let short = &body[..39];
+            // Open-ended tail, so the trailing probe is out-of-charset; an in-charset one is part of the key.
+            assert_shapes(
+                id,
+                &format!("{prefix}{body}"),
+                &format!("xyz{prefix}{body}"),
+                ".end",
+                &[
+                    &format!("{prefix}{short}"),
+                    &format!("{prefix}name"),
+                    &format!("the risk-proj-{body}"),
+                    &format!("task-{}{body}", &prefix[3..]),
+                ],
+            );
+        }
+    }
+
+    #[test]
+    fn openai_style_keys_do_not_cross_match_other_prefixes() {
+        let body = format!("{B36}-_{}", &B36[..2]);
+        let text = format!("sk-proj-{body} sk-svcacct-{body}");
+        let (out, c) = pattern_for("openai-project-key").apply(&text);
+        assert_eq!(c, 1);
+        assert_eq!(
+            out,
+            format!("[REDACTED-openai-project-key] sk-svcacct-{body}")
+        );
     }
 
     #[test]
