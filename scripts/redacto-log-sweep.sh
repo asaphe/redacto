@@ -19,11 +19,28 @@ while IFS= read -r g; do EXCLUDES+=(--exclude "$g"); done < <(redacto_sink_exclu
 SUMMARY=""
 # Scoped to the text sweep, not the whole hook: the image sinks are a separate list and can exist on their own.
 if [ ${#SINKS[@]} -gt 0 ]; then
-  if ERR_FILE=$(mktemp); then
-    trap 'rm -f "$ERR_FILE"' EXIT
+  if WORK=$(mktemp -d); then
+    trap 'rm -rf "$WORK"' EXIT
+    ERR_FILE="$WORK/stderr"
+    # Known-positive control swept in the SAME invocation: a clean result is evidence only if these come back redacted.
+    # Built by concatenation, never literal: a literal key here would itself be rewritten by the first sweep that reads this file.
+    CTRL="$WORK/known-positive.txt"
+    CTRL_TAIL="abcdefgh01234567abcdefgh01234567abcdefgh01234567"
+    {
+      printf '%s\n' "sk-""admin-$CTRL_TAIL"
+      printf '%s\n' "sk-""svcacct-$CTRL_TAIL"
+      printf '%s\n' "sk-""proj-$CTRL_TAIL"
+    } > "$CTRL"
+    CTRL_EXPECTED=3
+    # Backdated past --live-window-secs, or the fixture is skipped as still being written.
+    touch -t 202001010000 "$CTRL"
     # Streams kept apart: root errors and config warnings go to stderr carrying the same `redacto:` prefix as the summary line.
-    REDACTO_OUT=$("$REDACTO" --write --patterns secrets "${EXCLUDES[@]}" "${SINKS[@]}" 2>"$ERR_FILE")
+    REDACTO_OUT=$("$REDACTO" --write --patterns secrets "${EXCLUDES[@]}" "${SINKS[@]}" "$CTRL" 2>"$ERR_FILE")
     REDACTO_RC=$?
+    # Fail closed when unreadable; grep -c exits 1 on zero matches, so never `|| echo 0`.
+    CTRL_LEFT=$(grep -cE 'sk-(admin|svcacct|proj)-[A-Za-z0-9_-]{20,}' "$CTRL" 2>/dev/null)
+    case "$CTRL_LEFT" in ''|*[!0-9]*) CTRL_LEFT=$CTRL_EXPECTED ;; esac
+    CTRL_FIRED=$((CTRL_EXPECTED - CTRL_LEFT))
     REDACTO_ERR=$(head -5 "$ERR_FILE")
     # grep -c, not wc -l, which does not count a last line that lacks its newline.
     ERR_LINES=$(grep -c '' "$ERR_FILE")
@@ -35,11 +52,26 @@ if [ ${#SINKS[@]} -gt 0 ]; then
     TOTAL=$(echo "$SUMMARY" | grep -oE '[0-9]+ total redaction' | grep -oE '^[0-9]+' | head -1)
     FAILS=$(echo "$SUMMARY" | grep -oE '[0-9]+ validation failure' | grep -oE '^[0-9]+' | head -1)
     UNSAFE=$(echo "$SUMMARY" | grep -oE '[0-9]+ file\(s\) with unsafe lines' | grep -oE '^[0-9]+' | head -1)
+    # The control's own redactions are not findings; report only what the sinks held.
+    case "$TOTAL" in
+      ''|*[!0-9]*) ;;
+      *)
+        # The summary shown to the user gets the adjusted count too, or it reports redactions that were only the control.
+        SUMMARY=$(printf '%s\n' "$SUMMARY" | sed "s/${TOTAL} total redaction/$((TOTAL - CTRL_FIRED)) total redaction/")
+        TOTAL=$((TOTAL - CTRL_FIRED))
+        ;;
+    esac
     # PEM counts too: the CLI treats an unresolved orphan as not-clean (main.rs report()), so dropping it here contradicts that.
     PEM=$(echo "$SUMMARY" | grep -oE '[0-9]+ file\(s\) with unresolved PEM markers' | grep -oE '^[0-9]+' | head -1)
 
     # Four outcomes, only one of them silent — see README § How the plugin works.
-    if [ -z "$SUMMARY" ]; then
+    if [ "$CTRL_FIRED" -ne "$CTRL_EXPECTED" ]; then
+      # Louder than any finding: the sweep cannot be said to have checked anything.
+      CTRL_FAILED=1
+      SUMMARY=$(printf 'redacto: CONTROL FAILED (%s/%s synthetic keys redacted) — the secret rules did not fire on a known-positive file, so this run proves nothing and the sinks must be treated as UNSWEPT. The redacto binary may predate the OpenAI-style key rules.\n%s' \
+        "$CTRL_FIRED" "$CTRL_EXPECTED" "$SUMMARY")
+      printf '%s\n' "$SUMMARY" >&2
+    elif [ -z "$SUMMARY" ]; then
       # Whichever stream carried it: a wrapper on PATH may report its failure on stdout rather than stderr.
       DETAIL="$REDACTO_ERR"
       [ -n "$DETAIL" ] || DETAIL=$(printf '%s\n' "$REDACTO_OUT" | grep -v '^$' | tail -5)
@@ -61,7 +93,7 @@ if [ ${#SINKS[@]} -gt 0 ]; then
     fi
   else
     # Skipping silently would be the same failure-reads-as-clean shape this script exists to avoid.
-    SUMMARY="redacto: could not create a temp file — text sweep skipped, logs NOT redacted."
+    SUMMARY="redacto: could not create a temp dir — text sweep skipped, logs NOT redacted."
   fi
 fi
 
@@ -104,4 +136,6 @@ if [ -n "$REPORT" ]; then
   fi
 fi
 
+# Non-zero only when the control failed, so a no-op sweep cannot pass as a clean one.
+[ -z "${CTRL_FAILED:-}" ] || exit 1
 exit 0
