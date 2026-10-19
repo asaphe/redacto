@@ -116,8 +116,9 @@ custom = [
 AWS access keys, JWTs, private-key/PEM blocks (structural handler, not a
 single regex), Slack tokens (bot, legacy bot, user, app, legacy and legacy
 workspace), GitLab PATs (classic and routable), GitHub OAuth, personal,
-app/refresh and fine-grained tokens, Google API keys, Anthropic API keys, npm
-access tokens, Docker Hub PATs, Stripe access tokens, Slack webhook URLs, plus
+app/refresh and fine-grained tokens, Google API keys, Anthropic API keys,
+OpenAI-style admin (`sk-admin-`), service-account (`sk-svcacct-`) and project
+(`sk-proj-`) keys, npm access tokens, Docker Hub PATs, Stripe access tokens, Slack webhook URLs, plus
 one project-specific ClickHouse Cloud API key rule.
 
 One rule is key-anchored instead of token-shaped: `password-assignment`. A
@@ -141,8 +142,9 @@ than a false positive someone dismisses.
 
 Bounds are per-rule, and the exceptions are deliberate rather than oversights.
 Most prefixed rules are pinned to the vendor's exact body length, or to a range
-where that length genuinely varies. Two end in an open quantifier —
-`stripe-access-token` and `jwt` — because a cap would leave the tail of a live
+where that length genuinely varies. Five end in an open quantifier —
+`stripe-access-token`, `jwt` and the three `openai-*-key` rules (40-character
+minimum tail) — because a cap would leave the tail of a live
 credential sitting in the file. Rules whose charset admits `-`, `_` or `.`
 (`gitlab-pat`, `gitlab-pat-routable`, `google-api-key`, `anthropic-api-key`,
 `docker-pat`, `github-fine-grained-pat`, `slack-user-token`) rely on an exact

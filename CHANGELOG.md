@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+- **Added**: `openai-admin-key`, `openai-service-account-key` and
+  `openai-project-key`, redacting `sk-admin-`, `sk-svcacct-` and `sk-proj-`
+  keys with a tail of 40 or more characters.
+
 ## v0.2.5
 
 - **Added**: `password-assignment`, the first key-anchored secret rule. A quoted
