@@ -1,10 +1,16 @@
 # Changelog
 
-## Unreleased
+## v0.2.6
 
 - **Added**: `openai-admin-key`, `openai-service-account-key` and
   `openai-project-key`, redacting `sk-admin-`, `sk-svcacct-` and `sk-proj-`
   keys with a tail of 40 or more characters.
+- **Added**: the log sweep proves each run with a known-positive control. A
+  temp file of three synthetic OpenAI-style keys, built at runtime, is swept in
+  the same invocation as the sinks; unless all three come back redacted the
+  hook reports `CONTROL FAILED` and the sinks count as unswept, so a binary that
+  predates the new rules no longer reads as a clean sweep. The control's own
+  redactions are left out of the reported total.
 
 ## v0.2.5
 

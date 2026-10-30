@@ -64,7 +64,7 @@ if [ ${#SINKS[@]} -gt 0 ]; then
     # PEM counts too: the CLI treats an unresolved orphan as not-clean (main.rs report()), so dropping it here contradicts that.
     PEM=$(echo "$SUMMARY" | grep -oE '[0-9]+ file\(s\) with unresolved PEM markers' | grep -oE '^[0-9]+' | head -1)
 
-    # Four outcomes, only one of them silent — see README § How the plugin works.
+    # Only an all-zero summary with exit 0 stays silent; every other branch below reports.
     if [ "$CTRL_FIRED" -ne "$CTRL_EXPECTED" ]; then
       # Louder than any finding: the sweep cannot be said to have checked anything.
       CTRL_FAILED=1
