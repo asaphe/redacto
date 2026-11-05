@@ -193,7 +193,7 @@ fn scan_one(
 }
 
 // Writes via a temp file + rename (never truncates in place, so a crash mid-write can't corrupt the original) and re-stats immediately before the rename to narrow the TOCTOU window against a concurrent writer. Returns the post-write (mtime, size) on success so the caller can decide whether recording the watermark is actually correct for this file, rather than doing it unconditionally here.
-fn write_atomically(
+pub(crate) fn write_atomically(
     path: &Path,
     redacted: &str,
     expected_mtime: SystemTime,

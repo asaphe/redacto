@@ -5,7 +5,7 @@ use anyhow::Result;
 use clap::Parser;
 use globset::{Glob, GlobSetBuilder};
 
-use redacto::config::load_custom_patterns;
+use redacto::config::custom_patterns;
 use redacto::engine::scan::{FileOutcome, ScanOptions, ScanReport, SkipReason, scan_paths};
 use redacto::patterns::{Pattern, PatternSet};
 
@@ -46,12 +46,9 @@ fn main() -> Result<()> {
     }
 
     let mut patterns: Vec<Pattern> = cli.patterns.patterns();
-    let custom_regexes: Vec<regex::Regex> = cli
-        .config
-        .as_deref()
-        .map(load_custom_patterns)
-        .unwrap_or_default();
-    patterns.extend(custom_regexes_to_patterns(custom_regexes));
+    if let Some(config) = cli.config.as_deref() {
+        patterns.extend(custom_patterns(config));
+    }
 
     let mut exclude_builder = GlobSetBuilder::new();
     for pattern in &cli.exclude {
@@ -78,14 +75,6 @@ fn main() -> Result<()> {
         std::process::exit(1);
     }
     Ok(())
-}
-
-fn custom_regexes_to_patterns(regexes: Vec<regex::Regex>) -> Vec<Pattern> {
-    regexes
-        .into_iter()
-        .map(|r| Box::leak(Box::new(r)) as &'static regex::Regex)
-        .map(|r| Pattern::simple("custom", r))
-        .collect()
 }
 
 // Returns true if anything means a cron/CI caller should treat this run as not fully clean: a validation failure, an unsafe line left untouched, an unresolved PEM orphan/abort, or a root path that couldn't be scanned at all.

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Added**: `redacto-filter`, a Claude Code `PostToolUse` hook that masks secrets
+  in a tool result before the model and the transcript receive it. See README §
+  Masking tool results before they are stored.
+- **Added**: `encoded-name-value`, redacting a base64 run that decodes to
+  `name=<high-entropy value>`, such as a cookie match inside a WAF rule.
+- **Changed**: `redacto --config` now says on stderr when the file is missing,
+  as it already did for one that does not parse.
+
 ## v0.2.6
 
 - **Added**: `openai-admin-key`, `openai-service-account-key` and

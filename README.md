@@ -121,6 +121,13 @@ OpenAI-style admin (`sk-admin-`), service-account (`sk-svcacct-`) and project
 (`sk-proj-`) keys, npm access tokens, Docker Hub PATs, Stripe access tokens, Slack webhook URLs, plus
 one project-specific ClickHouse Cloud API key rule.
 
+One rule reads the decoded text: `encoded-name-value`. A credential wrapped in
+base64 inside a config object has no prefix to match, so a base64 run of up to
+4 KiB is decoded and redacted when the result is exactly `name=<value>` with a
+value of 24 or more characters and Shannon entropy of at least 3.5 bits per
+character. Base64 of prose, of a URL, or of a low-entropy value stays as it is,
+and so does URL-safe base64, which this rule does not decode.
+
 One rule is key-anchored instead of token-shaped: `password-assignment`. A
 password has no shape of its own, so it is found by its key — `password`,
 `passwd` or `pwd`, optionally after a `word_` or `word-` prefix — followed by
@@ -230,6 +237,54 @@ For a tighter sweep interval than "once per session start," pair this with
 your own cron/launchd invocation of `scripts/redacto-log-sweep.sh` (see
 [Built-in patterns](#built-in-patterns-v01) above on why this isn't a
 built-in daemon mode).
+
+### Masking tool results before they are stored
+
+The sweep cleans files after the model has already read the secret.
+`redacto-filter` is a `PostToolUse` hook that replaces a secret in a tool
+result first, so it reaches neither the model nor the transcript. It is a
+separate binary, not wired by the plugin; install it and add the hook yourself:
+
+```sh
+cargo install --locked --path . --bin redacto-filter
+```
+
+```json
+{"matcher": "Bash|Read", "hooks": [{"type": "command", "command": "redacto-filter --config /path/to/redacto.toml", "timeout": 10}]}
+```
+
+It runs the built-in secret rules, your `[patterns].custom` list and a
+multi-line private-key rule over every string in the result, keeps the result's
+shape, and adds a note telling the model a value was masked. A large result the
+client saved to `tool-results/` is rewritten too; a saved copy it cannot check
+gets a warning, and the result itself is still masked. Clean output gets no reply
+at all, so it stays byte-identical. An image and a `base64` field pass through
+untouched. A hook's stderr reaches nobody, so a config that is missing or does
+not parse, or a custom pattern that does not compile, puts a warning in every
+reply while the rest of the rules keep running.
+
+A `.redacto-exempt` file opts its directory tree out, for a detector's own
+fixtures. A `Read` is judged by the file's resolved path and everything else by
+the working directory. Anyone who can create that file can switch masking off
+for the tree, including a cloned repo that ships one.
+
+Claude Code documents only that the replacement changes what the model sees.
+That the transcript also stores the replacement was observed on client 2.1.318,
+so re-check it after upgrading. The rest of what it does not do:
+
+- **It fails open on its own.** A crash, a timeout or a reply that does not match
+  the tool's output shape leaves the original result in place. An unreadable
+  payload exits 1 with nothing on stdout, so a wrapper can return a stub of the
+  right shape; no wrapper can cover a timeout.
+- **It only knows shapes.** A random value with no key, name or known prefix passes.
+- **It sees only the tools on its matcher.** `Grep` and MCP tools are outside the
+  example above, and a file a command writes (`aws ... > file`) stays raw until
+  the sweep reaches it.
+- **It changes what the model reads.** A model that writes a masked file back
+  replaces the real value with `[REDACTED-*]`; the note tells it not to, and
+  nothing enforces that. A masked multi-line key also shifts later line numbers.
+- **Only one hook may rewrite.** Hooks run in parallel on the original output and
+  rewrites compete, last one wins.
 
 ### How the plugin works
 

@@ -8,6 +8,8 @@ enum Replacement {
     Token(String),
     Literal(&'static str),
     Fn(fn(&Captures) -> String),
+    // None leaves the match untouched and uncounted, for a rule whose regex only nominates candidates.
+    Conditional(fn(&Captures) -> Option<String>),
 }
 
 // Values published in vendor docs as literal examples — real-world testing confirmed AWS's own AKIAIOSFODNN7EXAMPLE shows up constantly in test fixtures and code discussing secret-detection, never as a real leaked credential.
@@ -61,6 +63,19 @@ impl Pattern {
         }
     }
 
+    // The regex nominates candidates and `f` decides; a None keeps the text and is not counted as a redaction.
+    pub fn conditional(
+        id: &'static str,
+        regex: &'static Regex,
+        f: fn(&Captures) -> Option<String>,
+    ) -> Self {
+        Self {
+            id,
+            regex,
+            replacement: Replacement::Conditional(f),
+        }
+    }
+
     // Applies this pattern to `text`, returning the (possibly unchanged) result and how many matches were redacted. A known-benign match (e.g. a vendor doc's own example key) is left untouched and not counted.
     pub fn apply<'t>(&self, text: &'t str) -> (Cow<'t, str>, usize) {
         let mut count = 0usize;
@@ -88,6 +103,16 @@ impl Pattern {
                 }
                 count += 1;
                 f(caps)
+            }),
+            Replacement::Conditional(f) => self.regex.replace_all(text, |caps: &Captures| {
+                let whole = caps.get(0).map_or("", |m| m.as_str());
+                match f(caps) {
+                    Some(replacement) if !is_known_benign(whole) => {
+                        count += 1;
+                        replacement
+                    }
+                    _ => whole.to_string(),
+                }
             }),
         };
         (result, count)

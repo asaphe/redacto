@@ -35,7 +35,9 @@ that's correctly *not* matched.
 Structural (multi-line) secrets go in `src/structural/` following the PEM
 handler's model: never let a redaction cross a physical-line boundary, and
 distinguish safe containment/nesting from genuine ambiguity (abort and flag
-the latter rather than guessing).
+the latter rather than guessing). The one exception is `redacto-filter`'s
+private-key rule in `src/engine/filter.rs`: it sees a whole tool result, never a
+file a later reader expects line-for-line, and the sweep does not use it.
 
 ## Reporting a security issue
 
