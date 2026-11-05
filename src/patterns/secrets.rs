@@ -125,6 +125,69 @@ fn redact_password_assignment(c: &Captures) -> String {
     }
 }
 
+// A base64-wrapped credential (a WAF `SearchString` holding `cookie=<token>`) has no prefix, so the decoded text decides; 4 KiB bounds the decode against image payloads.
+static ENCODED_NAME_VALUE_RE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"[A-Za-z0-9+/]{32,}={0,2}").unwrap());
+static DECODED_NAME_VALUE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^[A-Za-z_][A-Za-z0-9_.\-]{1,40}=([A-Za-z0-9+/_\-.%=]{24,})\r?\n?$").unwrap()
+});
+const ENCODED_NAME_VALUE_MAX: usize = 4096;
+const ENCODED_NAME_VALUE_MIN_ENTROPY: f64 = 3.5;
+
+fn decode_base64(text: &str) -> Option<Vec<u8>> {
+    let body = text.trim_end_matches('=');
+    if body.len() % 4 == 1 || text.len() - body.len() > 2 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(body.len() * 3 / 4);
+    let (mut buffer, mut bits) = (0u32, 0u32);
+    for byte in body.bytes() {
+        let value = match byte {
+            b'A'..=b'Z' => byte - b'A',
+            b'a'..=b'z' => byte - b'a' + 26,
+            b'0'..=b'9' => byte - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        };
+        buffer = (buffer << 6) | u32::from(value);
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buffer >> bits) as u8);
+            buffer &= (1 << bits) - 1;
+        }
+    }
+    Some(out)
+}
+
+fn shannon_entropy(text: &str) -> f64 {
+    let mut counts = [0u32; 256];
+    for byte in text.bytes() {
+        counts[usize::from(byte)] += 1;
+    }
+    let total = text.len() as f64;
+    counts
+        .iter()
+        .filter(|&&count| count > 0)
+        .map(|&count| {
+            let share = f64::from(count) / total;
+            -share * share.log2()
+        })
+        .sum()
+}
+
+fn redact_encoded_name_value(c: &Captures) -> Option<String> {
+    let whole = c.get(0)?.as_str();
+    if whole.len() > ENCODED_NAME_VALUE_MAX {
+        return None;
+    }
+    let decoded = String::from_utf8(decode_base64(whole)?).ok()?;
+    let value = DECODED_NAME_VALUE_RE.captures(&decoded)?.get(1)?.as_str();
+    (shannon_entropy(value) >= ENCODED_NAME_VALUE_MIN_ENTROPY)
+        .then(|| "[REDACTED-encoded-name-value]".to_string())
+}
+
 // v0.1 high-confidence subset validated against real data — see README for what's deferred and why.
 pub fn secret_patterns() -> Vec<Pattern> {
     vec![
@@ -163,6 +226,11 @@ pub fn secret_patterns() -> Vec<Pattern> {
             &PASSWORD_ASSIGNMENT_RE,
             redact_password_assignment,
         ),
+        Pattern::conditional(
+            "encoded-name-value",
+            &ENCODED_NAME_VALUE_RE,
+            redact_encoded_name_value,
+        ),
     ]
 }
 
@@ -170,6 +238,92 @@ pub fn secret_patterns() -> Vec<Pattern> {
 mod tests {
     use super::*;
     use crate::patterns::Pattern as P;
+
+    const FIXTURE_VALUE: &str = "Zq7Lm2Vt9RzK4pWc8Hy3Nf6Jd1Sb5Ga0Ue7Xq2Tr9Mk4Pv8Y";
+
+    fn encoded(text: &str) -> String {
+        const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut out = String::new();
+        for chunk in text.as_bytes().chunks(3) {
+            let b = [
+                chunk[0],
+                *chunk.get(1).unwrap_or(&0),
+                *chunk.get(2).unwrap_or(&0),
+            ];
+            let n = (u32::from(b[0]) << 16) | (u32::from(b[1]) << 8) | u32::from(b[2]);
+            for i in 0..4 {
+                if i <= chunk.len() {
+                    out.push(ALPHABET[((n >> (18 - 6 * i)) & 63) as usize] as char);
+                } else {
+                    out.push('=');
+                }
+            }
+        }
+        out
+    }
+
+    fn encoded_rule() -> P {
+        P::conditional(
+            "encoded-name-value",
+            &ENCODED_NAME_VALUE_RE,
+            redact_encoded_name_value,
+        )
+    }
+
+    #[test]
+    fn base64_of_a_name_and_a_random_value_is_redacted() {
+        let text = format!(
+            r#""SearchString": "{}""#,
+            encoded(&format!("__fixture_cookie={FIXTURE_VALUE}"))
+        );
+        let (out, count) = encoded_rule().apply(&text);
+        assert_eq!(count, 1);
+        assert_eq!(out, r#""SearchString": "[REDACTED-encoded-name-value]""#);
+    }
+
+    #[test]
+    fn base64_without_padding_or_with_a_trailing_newline_is_still_redacted() {
+        let padded = encoded(&format!("__fixture_cookie={FIXTURE_VALUE}\n"));
+        let unpadded = padded.trim_end_matches('=').to_string();
+        assert_eq!(encoded_rule().apply(&padded).1, 1);
+        assert_eq!(encoded_rule().apply(&unpadded).1, 1);
+    }
+
+    #[test]
+    fn base64_of_a_value_holding_padding_dots_or_percent_escapes_is_redacted() {
+        for value in [
+            format!("{FIXTURE_VALUE}=="),
+            format!("{}.{}", &FIXTURE_VALUE[..20], &FIXTURE_VALUE[20..]),
+            format!("{FIXTURE_VALUE}%3D"),
+        ] {
+            let text = encoded(&format!("session={value}"));
+            assert_eq!(encoded_rule().apply(&text).1, 1, "{value}");
+        }
+    }
+
+    #[test]
+    fn base64_of_ordinary_text_or_a_low_entropy_value_is_left_alone() {
+        for plain in [
+            "a sentence that is long enough to be nominated by the regex",
+            "__fixture_name=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "name=short",
+            "https://example.com/path?with=a-long-but-ordinary-query-string",
+        ] {
+            let text = encoded(plain);
+            let (out, count) = encoded_rule().apply(&text);
+            assert_eq!(count, 0, "{plain}");
+            assert_eq!(out, text);
+        }
+    }
+
+    #[test]
+    fn a_run_that_is_not_base64_of_utf8_or_is_too_long_is_left_alone() {
+        let binary = "/////////////////////////////////w==";
+        assert_eq!(encoded_rule().apply(binary).1, 0);
+        let long = encoded(&format!("__fixture_cookie={}", FIXTURE_VALUE.repeat(100)));
+        assert!(long.len() > ENCODED_NAME_VALUE_MAX);
+        assert_eq!(encoded_rule().apply(&long).1, 0);
+    }
 
     #[test]
     fn jwt_is_detected_before_an_ampersand_in_an_oauth_callback_url() {
