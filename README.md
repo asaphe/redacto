@@ -46,6 +46,12 @@ Without `--write`, redacto reports what it would redact and changes
 nothing. Files modified within the last 5 minutes (`--live-window-secs`) are
 skipped as possibly still being written.
 
+Some files are left with something only a person can resolve: an unpaired
+private-key marker, or a line that would break JSON if redacted. The watermark
+remembers what was found in such a file, so later runs report it again without
+re-reading it. The file is read again once it changes, or once the rule set
+changes (the binary version, the patterns in use, or `--patterns`).
+
 ### Three ways a scan reports clean when it did not run
 
 Each of these produces a clean-looking summary rather than an error, so

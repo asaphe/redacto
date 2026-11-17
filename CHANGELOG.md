@@ -40,6 +40,11 @@
   written` field of the summary line, and the run exits 1.
 - **Changed**: the image sweep names each temp file after its transcript, so a
   run scoped to one transcript reaps only that file's leftovers.
+- **Fixed**: a file left with an unpaired private-key marker or an unsafe line
+  was never watermarked, so every run re-read it in full. On one machine that
+  was 177 of the 180 files a full sweep matched. The watermark now records
+  what such a file holds. An unchanged file is reported from that record
+  without being read, and is read again when it changes or the rule set does.
 - **Added**: `redacto-filter`, a Claude Code `PostToolUse` hook that masks secrets
   in a tool result before the model and the transcript receive it. See README §
   Masking tool results before they are stored.

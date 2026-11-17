@@ -8,8 +8,30 @@ use walkdir::WalkDir;
 
 use super::redact::{RedactSummary, redact_jsonl, redact_text};
 use super::validity::{FileKind, is_valid};
-use super::watermark::Watermark;
+use super::watermark::{Unresolved, Watermark};
 use crate::patterns::Pattern;
+
+// Bump when the PEM or JSONL handling changes what a file reports, so cached unresolved results are read again.
+const UNRESOLVED_CACHE_VERSION: u32 = 1;
+
+// FNV-1a, not DefaultHasher: the fingerprint is persisted, and std's hasher may change between releases.
+fn rules_fingerprint(patterns: &[Pattern], include_pem: bool) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |text: &str| {
+        for byte in text.bytes().chain(std::iter::once(0)) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    feed(env!("CARGO_PKG_VERSION"));
+    feed(&UNRESOLVED_CACHE_VERSION.to_string());
+    feed(if include_pem { "pem" } else { "no-pem" });
+    for pattern in patterns {
+        feed(pattern.id);
+        feed(pattern.source());
+    }
+    format!("{hash:016x}")
+}
 
 pub struct ScanOptions {
     pub write: bool,
@@ -63,7 +85,10 @@ pub fn scan_paths(
     patterns: &[Pattern],
     opts: &ScanOptions,
 ) -> Result<ScanReport> {
-    let mut watermark = Watermark::load(&opts.state_path);
+    let mut watermark = Watermark::load(
+        &opts.state_path,
+        &rules_fingerprint(patterns, opts.include_pem),
+    );
     let mut results = Vec::new();
     let mut root_errors = Vec::new();
 
@@ -132,6 +157,22 @@ fn scan_one(
         return skip(SkipReason::PossiblyLive);
     }
 
+    if let Some(found) = watermark.cached_unresolved(path, mtime, size) {
+        // Reported from the last full read: the bytes have not changed, so neither has what needs a human.
+        return ScanResult {
+            path: path_buf,
+            outcome: FileOutcome::Redacted {
+                summary: RedactSummary {
+                    pem_orphan_begin: found.pem_orphan_begin,
+                    pem_orphan_end: found.pem_orphan_end,
+                    pem_aborted_lines: found.pem_aborted_lines,
+                    ..Default::default()
+                },
+                written: false,
+                unsafe_lines: found.unsafe_lines,
+            },
+        };
+    }
     if watermark.is_unchanged(path, mtime, size) {
         return skip(SkipReason::Unchanged);
     }
@@ -161,6 +202,20 @@ fn scan_one(
             path: path_buf,
             outcome: FileOutcome::Clean,
         };
+    }
+    // Nothing to write, only something to report: an unchanged file is then reported from this record instead of re-read on every run.
+    if summary.total_redactions() == 0 {
+        watermark.record_unresolved(
+            path,
+            mtime,
+            size,
+            Unresolved {
+                pem_orphan_begin: summary.pem_orphan_begin,
+                pem_orphan_end: summary.pem_orphan_end,
+                pem_aborted_lines: summary.pem_aborted_lines.clone(),
+                unsafe_lines: unsafe_lines.clone(),
+            },
+        );
     }
 
     if matches!(kind, FileKind::Json | FileKind::PlainText) && !is_valid(&kind, &redacted) {
@@ -420,11 +475,11 @@ mod tests {
         let target = dir.path().join("x.log");
         fs::write(&target, "x").unwrap();
         let (mtime, size) = stamp_of(&target);
-        let mut wm = Watermark::load(&state);
+        let mut wm = Watermark::load(&state, "rules");
         wm.record(&target, mtime, size);
         wm.save(&state).unwrap();
 
-        assert!(Watermark::load(&state).is_unchanged(&target, mtime, size));
+        assert!(Watermark::load(&state, "rules").is_unchanged(&target, mtime, size));
         let names: Vec<String> = fs::read_dir(dir.path())
             .unwrap()
             .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
@@ -498,7 +553,12 @@ mod tests {
         }
 
         // Re-scan against the same watermark file: an unresolved concern must never be silently skipped on a later run.
-        let report2 = scan_paths(&[file_path], &patterns, &opts(state_path, false)).unwrap();
+        let report2 = scan_paths(
+            std::slice::from_ref(&file_path),
+            &patterns,
+            &opts(state_path.clone(), false),
+        )
+        .unwrap();
         match &report2.results[0].outcome {
             FileOutcome::Skipped { .. } => {
                 panic!("an unresolved orphan PEM marker must be re-flagged every scan, not skipped")
@@ -506,6 +566,69 @@ mod tests {
             FileOutcome::Redacted { summary, .. } => assert!(summary.has_pem_concern()),
             _ => panic!("unexpected outcome on re-scan"),
         }
+
+        #[cfg(unix)]
+        unresolved_cache_is_used_only_while_bytes_and_rules_hold(
+            &file_path,
+            &state_path,
+            &patterns,
+        );
+    }
+
+    // Mode 000 leaves mtime and size alone, so a report means the cache answered and a read error means a read was tried.
+    #[cfg(unix)]
+    fn unresolved_cache_is_used_only_while_bytes_and_rules_hold(
+        file_path: &Path,
+        state_path: &Path,
+        patterns: &[Pattern],
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let scan = |rules: &[Pattern]| {
+            scan_paths(
+                &[file_path.to_path_buf()],
+                rules,
+                &opts(state_path.to_path_buf(), false),
+            )
+            .unwrap()
+        };
+        let lock = |mode| fs::set_permissions(file_path, fs::Permissions::from_mode(mode)).unwrap();
+        lock(0o000);
+        if fs::read(file_path).is_ok() {
+            lock(0o600);
+            return; // root reads through mode 000, so a read cannot be told from a cache hit
+        }
+        let cached = scan(patterns);
+        let other_rules = &crate::patterns::PatternSet::Infra.patterns()[..];
+        let after_rules_change = scan(other_rules);
+        lock(0o600);
+        scan(patterns);
+        append(file_path, "one more line\n");
+        lock(0o000);
+        let after_append = scan(patterns);
+        lock(0o600);
+
+        assert!(
+            matches!(&cached.results[0].outcome, FileOutcome::Redacted { summary, .. } if summary.pem_orphan_begin == 1),
+            "an unchanged file must be reported from the cache without a read"
+        );
+        assert!(
+            matches!(
+                after_rules_change.results[0].outcome,
+                FileOutcome::Skipped {
+                    reason: SkipReason::ReadError
+                }
+            ),
+            "different rules must drop the cached result and read the file again"
+        );
+        assert!(
+            matches!(
+                after_append.results[0].outcome,
+                FileOutcome::Skipped {
+                    reason: SkipReason::ReadError
+                }
+            ),
+            "a changed file must be read again, not answered from the cache"
+        );
     }
 
     #[test]

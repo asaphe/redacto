@@ -27,6 +27,11 @@ pub struct Pattern {
 }
 
 impl Pattern {
+    // The regex text, so a cache keyed on the rule set notices an edited custom rule that kept its id.
+    pub fn source(&self) -> &str {
+        self.regex.as_str()
+    }
+
     // Whole match becomes a bare "[REDACTED-<id>]" token.
     pub fn simple(id: &'static str, regex: &'static Regex) -> Self {
         Self {
