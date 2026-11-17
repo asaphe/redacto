@@ -1,3 +1,4 @@
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
@@ -7,8 +8,30 @@ use walkdir::WalkDir;
 
 use super::redact::{RedactSummary, redact_jsonl, redact_text};
 use super::validity::{FileKind, is_valid};
-use super::watermark::Watermark;
+use super::watermark::{Unresolved, Watermark};
 use crate::patterns::Pattern;
+
+// Bump when the PEM or JSONL handling changes what a file reports, so cached unresolved results are read again.
+const UNRESOLVED_CACHE_VERSION: u32 = 1;
+
+// FNV-1a, not DefaultHasher: the fingerprint is persisted, and std's hasher may change between releases.
+fn rules_fingerprint(patterns: &[Pattern], include_pem: bool) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut feed = |text: &str| {
+        for byte in text.bytes().chain(std::iter::once(0)) {
+            hash ^= u64::from(byte);
+            hash = hash.wrapping_mul(0x0100_0000_01b3);
+        }
+    };
+    feed(env!("CARGO_PKG_VERSION"));
+    feed(&UNRESOLVED_CACHE_VERSION.to_string());
+    feed(if include_pem { "pem" } else { "no-pem" });
+    for pattern in patterns {
+        feed(pattern.id);
+        feed(pattern.source());
+    }
+    format!("{hash:016x}")
+}
 
 pub struct ScanOptions {
     pub write: bool,
@@ -62,7 +85,10 @@ pub fn scan_paths(
     patterns: &[Pattern],
     opts: &ScanOptions,
 ) -> Result<ScanReport> {
-    let mut watermark = Watermark::load(&opts.state_path);
+    let mut watermark = Watermark::load(
+        &opts.state_path,
+        &rules_fingerprint(patterns, opts.include_pem),
+    );
     let mut results = Vec::new();
     let mut root_errors = Vec::new();
 
@@ -131,6 +157,22 @@ fn scan_one(
         return skip(SkipReason::PossiblyLive);
     }
 
+    if let Some(found) = watermark.cached_unresolved(path, mtime, size) {
+        // Reported from the last full read: the bytes have not changed, so neither has what needs a human.
+        return ScanResult {
+            path: path_buf,
+            outcome: FileOutcome::Redacted {
+                summary: RedactSummary {
+                    pem_orphan_begin: found.pem_orphan_begin,
+                    pem_orphan_end: found.pem_orphan_end,
+                    pem_aborted_lines: found.pem_aborted_lines,
+                    ..Default::default()
+                },
+                written: false,
+                unsafe_lines: found.unsafe_lines,
+            },
+        };
+    }
     if watermark.is_unchanged(path, mtime, size) {
         return skip(SkipReason::Unchanged);
     }
@@ -160,6 +202,20 @@ fn scan_one(
             path: path_buf,
             outcome: FileOutcome::Clean,
         };
+    }
+    // Nothing to write, only something to report: an unchanged file is then reported from this record instead of re-read on every run.
+    if summary.total_redactions() == 0 {
+        watermark.record_unresolved(
+            path,
+            mtime,
+            size,
+            Unresolved {
+                pem_orphan_begin: summary.pem_orphan_begin,
+                pem_orphan_end: summary.pem_orphan_end,
+                pem_aborted_lines: summary.pem_aborted_lines.clone(),
+                unsafe_lines: unsafe_lines.clone(),
+            },
+        );
     }
 
     if matches!(kind, FileKind::Json | FileKind::PlainText) && !is_valid(&kind, &redacted) {
@@ -192,46 +248,95 @@ fn scan_one(
     }
 }
 
-// Writes via a temp file + rename (never truncates in place, so a crash mid-write can't corrupt the original) and re-stats immediately before the rename to narrow the TOCTOU window against a concurrent writer. Returns the post-write (mtime, size) on success so the caller can decide whether recording the watermark is actually correct for this file, rather than doing it unconditionally here.
+// Writes via a temp file + rename (never truncates in place, so a crash mid-write can't corrupt the original). Returns the replacement's (mtime, size), taken from the temp file before it is published, so the caller can decide whether recording the watermark is actually correct for this file.
 pub(crate) fn write_atomically(
     path: &Path,
     redacted: &str,
     expected_mtime: SystemTime,
     expected_size: u64,
 ) -> Option<(SystemTime, u64)> {
-    let Ok(current_meta) = std::fs::metadata(path) else {
-        return None;
+    write_atomically_observed(path, redacted, expected_mtime, expected_size, &mut |_| {})
+}
+
+// The points where a concurrent writer's append is most dangerous; tests inject one at each.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum WritePhase {
+    TempWritten,
+    Published,
+}
+
+fn write_atomically_observed(
+    path: &Path,
+    redacted: &str,
+    expected_mtime: SystemTime,
+    expected_size: u64,
+    observe: &mut dyn FnMut(WritePhase),
+) -> Option<(SystemTime, u64)> {
+    let unchanged = || -> Option<std::fs::Metadata> {
+        let meta = std::fs::metadata(path).ok()?;
+        (meta.modified().ok()? == expected_mtime && meta.len() == expected_size).then_some(meta)
     };
-    let current_mtime = current_meta.modified().unwrap_or(SystemTime::now());
-    if current_mtime != expected_mtime || current_meta.len() != expected_size {
-        return None;
-    }
+    let current_meta = unchanged()?;
 
     let tmp_path = path.with_extension(format!(
-        "redacto-tmp-{}",
+        "redacto-tmp-{}-{}",
+        std::process::id(),
         SystemTime::now()
             .duration_since(SystemTime::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0)
     ));
-    if std::fs::write(&tmp_path, redacted).is_err() {
+    let written = (|| -> std::io::Result<(SystemTime, u64)> {
+        let mut file = create_exclusive(&tmp_path, &current_meta.permissions())?;
+        file.write_all(redacted.as_bytes())?;
+        // Created at most as permissive as the original (mode & ~umask); this restores the exact mode, so a 600 log stays 600.
+        file.set_permissions(current_meta.permissions())?;
+        file.sync_all()?;
+        // Stamped before publishing: a stat after the rename could include an append the scan never read.
+        let meta = file.metadata()?;
+        Ok((meta.modified()?, meta.len()))
+    })();
+    let Ok(stamp) = written else {
+        let _ = std::fs::remove_file(&tmp_path);
+        return None;
+    };
+    observe(WritePhase::TempWritten);
+    // Re-checked after the temp write, not only before it: an append during a large write would otherwise be renamed away.
+    if unchanged().is_none() || std::fs::rename(&tmp_path, path).is_err() {
         let _ = std::fs::remove_file(&tmp_path);
         return None;
     }
-    // The temp file is born with the umask default, so a 600 log would come back 644 after the rename.
-    if std::fs::set_permissions(&tmp_path, current_meta.permissions()).is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
-        return None;
-    }
-    if std::fs::rename(&tmp_path, path).is_err() {
-        let _ = std::fs::remove_file(&tmp_path);
-        return None;
-    }
+    observe(WritePhase::Published);
+    sync_parent_dir(path);
+    Some(stamp)
+}
 
-    std::fs::metadata(path).ok().map(|new_meta| {
-        let new_mtime = new_meta.modified().unwrap_or(SystemTime::now());
-        (new_mtime, new_meta.len())
-    })
+// create_new refuses a path that already exists (a planted file or symlink), and the initial mode is never wider than the original's.
+fn create_exclusive(
+    path: &Path,
+    permissions: &std::fs::Permissions,
+) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+        options.mode(permissions.mode() & 0o7777);
+    }
+    #[cfg(not(unix))]
+    let _ = permissions;
+    options.open(path)
+}
+
+// Durability only: the rename already happened, so a failure here is not a failed write.
+fn sync_parent_dir(path: &Path) {
+    let parent = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p,
+        _ => Path::new("."),
+    };
+    if let Ok(dir) = std::fs::File::open(parent) {
+        let _ = dir.sync_all();
+    }
 }
 
 #[cfg(test)]
@@ -249,6 +354,137 @@ mod tests {
             state_path,
             include_pem: true,
         }
+    }
+
+    fn stamp_of(path: &Path) -> (SystemTime, u64) {
+        let meta = fs::metadata(path).unwrap();
+        (meta.modified().unwrap(), meta.len())
+    }
+
+    fn leftover_temps(dir: &Path) -> Vec<String> {
+        fs::read_dir(dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| e.file_name().to_string_lossy().to_string())
+            .filter(|n| n.contains("redacto-tmp-"))
+            .collect()
+    }
+
+    #[test]
+    fn write_atomically_returns_the_published_files_own_stamp() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        fs::write(&path, "before\n").unwrap();
+        let (mtime, size) = stamp_of(&path);
+
+        let stamp = write_atomically(&path, "after!!\n", mtime, size)
+            .expect("an unchanged file must be replaced");
+
+        assert_eq!(fs::read_to_string(&path).unwrap(), "after!!\n");
+        assert_eq!(
+            stamp,
+            stamp_of(&path),
+            "the returned stamp must be the one the published file carries"
+        );
+        assert!(
+            leftover_temps(dir.path()).is_empty(),
+            "no temp file may survive a successful write"
+        );
+    }
+
+    #[test]
+    fn write_atomically_refuses_a_file_that_changed_since_it_was_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        fs::write(&path, "before\n").unwrap();
+        let (mtime, size) = stamp_of(&path);
+        fs::write(&path, "before\nappended by the session\n").unwrap();
+
+        assert!(write_atomically(&path, "redacted\n", mtime, size).is_none());
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "before\nappended by the session\n",
+            "the append must survive"
+        );
+        assert!(
+            leftover_temps(dir.path()).is_empty(),
+            "a refused write must clean up its temp file"
+        );
+    }
+
+    fn append(path: &Path, text: &str) {
+        use std::io::Write as _;
+        let mut f = fs::OpenOptions::new().append(true).open(path).unwrap();
+        f.write_all(text.as_bytes()).unwrap();
+    }
+
+    #[test]
+    fn an_append_while_the_replacement_is_written_survives() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        fs::write(&path, "before\n").unwrap();
+        let (mtime, size) = stamp_of(&path);
+
+        let result = write_atomically_observed(&path, "redacted\n", mtime, size, &mut |phase| {
+            if phase == WritePhase::TempWritten {
+                append(&path, "appended by the session\n");
+            }
+        });
+
+        assert!(
+            result.is_none(),
+            "a file that grew during the temp write must not be replaced"
+        );
+        assert_eq!(
+            fs::read_to_string(&path).unwrap(),
+            "before\nappended by the session\n"
+        );
+        assert!(
+            leftover_temps(dir.path()).is_empty(),
+            "the refused replacement must be removed"
+        );
+    }
+
+    #[test]
+    fn an_append_after_publishing_is_not_stamped_as_scanned() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("t.jsonl");
+        fs::write(&path, "before\n").unwrap();
+        let (mtime, size) = stamp_of(&path);
+
+        let stamp = write_atomically_observed(&path, "redacted\n", mtime, size, &mut |phase| {
+            if phase == WritePhase::Published {
+                append(&path, "appended after the rename\n");
+            }
+        })
+        .expect("the replacement itself was published");
+
+        let mut wm = Watermark::default();
+        wm.record(&path, stamp.0, stamp.1);
+        let (now_mtime, now_size) = stamp_of(&path);
+        assert!(
+            !wm.is_unchanged(&path, now_mtime, now_size),
+            "the recorded stamp must not cover bytes appended after the rename"
+        );
+    }
+
+    #[test]
+    fn a_watermark_save_leaves_no_temp_file_and_reloads() {
+        let dir = tempfile::tempdir().unwrap();
+        let state = dir.path().join("watermark.json");
+        let target = dir.path().join("x.log");
+        fs::write(&target, "x").unwrap();
+        let (mtime, size) = stamp_of(&target);
+        let mut wm = Watermark::load(&state, "rules");
+        wm.record(&target, mtime, size);
+        wm.save(&state).unwrap();
+
+        assert!(Watermark::load(&state, "rules").is_unchanged(&target, mtime, size));
+        let names: Vec<String> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|e| e.unwrap().file_name().to_string_lossy().to_string())
+            .collect();
+        assert!(!names.iter().any(|n| n.contains(".tmp-")), "{names:?}");
     }
 
     #[cfg(unix)]
@@ -317,7 +553,12 @@ mod tests {
         }
 
         // Re-scan against the same watermark file: an unresolved concern must never be silently skipped on a later run.
-        let report2 = scan_paths(&[file_path], &patterns, &opts(state_path, false)).unwrap();
+        let report2 = scan_paths(
+            std::slice::from_ref(&file_path),
+            &patterns,
+            &opts(state_path.clone(), false),
+        )
+        .unwrap();
         match &report2.results[0].outcome {
             FileOutcome::Skipped { .. } => {
                 panic!("an unresolved orphan PEM marker must be re-flagged every scan, not skipped")
@@ -325,6 +566,69 @@ mod tests {
             FileOutcome::Redacted { summary, .. } => assert!(summary.has_pem_concern()),
             _ => panic!("unexpected outcome on re-scan"),
         }
+
+        #[cfg(unix)]
+        unresolved_cache_is_used_only_while_bytes_and_rules_hold(
+            &file_path,
+            &state_path,
+            &patterns,
+        );
+    }
+
+    // Mode 000 leaves mtime and size alone, so a report means the cache answered and a read error means a read was tried.
+    #[cfg(unix)]
+    fn unresolved_cache_is_used_only_while_bytes_and_rules_hold(
+        file_path: &Path,
+        state_path: &Path,
+        patterns: &[Pattern],
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+        let scan = |rules: &[Pattern]| {
+            scan_paths(
+                &[file_path.to_path_buf()],
+                rules,
+                &opts(state_path.to_path_buf(), false),
+            )
+            .unwrap()
+        };
+        let lock = |mode| fs::set_permissions(file_path, fs::Permissions::from_mode(mode)).unwrap();
+        lock(0o000);
+        if fs::read(file_path).is_ok() {
+            lock(0o600);
+            return; // root reads through mode 000, so a read cannot be told from a cache hit
+        }
+        let cached = scan(patterns);
+        let other_rules = &crate::patterns::PatternSet::Infra.patterns()[..];
+        let after_rules_change = scan(other_rules);
+        lock(0o600);
+        scan(patterns);
+        append(file_path, "one more line\n");
+        lock(0o000);
+        let after_append = scan(patterns);
+        lock(0o600);
+
+        assert!(
+            matches!(&cached.results[0].outcome, FileOutcome::Redacted { summary, .. } if summary.pem_orphan_begin == 1),
+            "an unchanged file must be reported from the cache without a read"
+        );
+        assert!(
+            matches!(
+                after_rules_change.results[0].outcome,
+                FileOutcome::Skipped {
+                    reason: SkipReason::ReadError
+                }
+            ),
+            "different rules must drop the cached result and read the file again"
+        );
+        assert!(
+            matches!(
+                after_append.results[0].outcome,
+                FileOutcome::Skipped {
+                    reason: SkipReason::ReadError
+                }
+            ),
+            "a changed file must be read again, not answered from the cache"
+        );
     }
 
     #[test]

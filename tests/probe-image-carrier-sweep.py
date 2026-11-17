@@ -112,6 +112,61 @@ def case_transcript(root):
     check("second run is idempotent", open(path, "rb").read() == digest and out == "", out)
 
 
+def old_image_record():
+    return {"type": "user", "timestamp": ts(72), "message": {"role": "user", "content": [
+        {"type": "image", "source": {"type": "base64", "data": payload_bytes(3000), "media_type": "image/png"}}]}}
+
+
+def case_scoped_empty_lists_sweep_nothing(root):
+    """A session hook with no transcript of its own passes no --transcript; without --scoped
+    that empty list meant every transcript under $HOME/.claude/projects."""
+    home = os.path.join(root, "scoped-home")
+    proj = os.path.join(home, ".claude", "projects", "slug")
+    cache = os.path.join(home, ".claude", "image-cache", "other-session")
+    os.makedirs(proj)
+    os.makedirs(cache)
+    path = os.path.join(proj, "another-session.jsonl")
+    write_jsonl(path, [old_image_record()])
+    shot = os.path.join(cache, "1.png")
+    open(shot, "wb").write(b"png")
+    stamp = NOW.timestamp() - 72 * 3600
+    os.utime(shot, (stamp, stamp))
+    before = open(path, "rb").read()
+
+    def go(*extra):
+        cmd = [sys.executable, SWEEP, "--state-file", os.path.join(root, "scoped-state.json")] + list(extra)
+        return subprocess.run(cmd, capture_output=True, text=True, env=dict(os.environ, HOME=home))
+
+    control = go("--dry-run")
+    check("control: without --scoped the same empty lists reach the default transcript",
+          "1 payload(s)" in control.stdout, control.stdout + control.stderr)
+    proc = go("--scoped")
+    check("--scoped with empty lists exits 0", proc.returncode == 0, proc.stderr)
+    check("--scoped with empty lists leaves another session's transcript alone", open(path, "rb").read() == before)
+    check("--scoped with empty lists leaves the image cache alone", os.path.exists(shot))
+
+
+def case_file_target_reaps_its_own_directory(root):
+    """A transcript passed as a file is not walked, so a killed rewrite beside it was never reaped."""
+    proj = os.path.join(root, "file-target")
+    os.makedirs(proj)
+    path = os.path.join(proj, "session.jsonl")
+    write_jsonl(path, [{"type": "user", "timestamp": ts(1), "message": {"role": "user", "content": "x"}}])
+    orphan = os.path.join(proj, ".image-sweep-session.jsonl.killed")
+    young = os.path.join(proj, ".image-sweep-session.jsonl.inflight")
+    neighbour = os.path.join(proj, ".image-sweep-other-session.jsonl.killed")
+    for p in (orphan, young, neighbour):
+        open(p, "w").write("partial copy")
+    stamp = NOW.timestamp() - 2 * 3600
+    for p in (orphan, neighbour):
+        os.utime(p, (stamp, stamp))
+    rc, out, err = run(root, "--scoped", "--transcript", path)
+    check("a file target run exits 0", rc == 0, err)
+    check("an hour-old orphan of this file is reaped", not os.path.exists(orphan), out)
+    check("control: a fresh temp of this file survives", os.path.exists(young))
+    check("another transcript's orphan in the shared directory survives", os.path.exists(neighbour))
+
+
 def case_live_window(root):
     proj = os.path.join(root, "live")
     os.makedirs(proj)
@@ -439,6 +494,8 @@ def main():
     check("placeholder is a 96-char valid PNG", len(PLACEHOLDER) == 96 and raw[:8] == b"\x89PNG\r\n\x1a\n")
     cases = (
         case_transcript,
+        case_scoped_empty_lists_sweep_nothing,
+        case_file_target_reaps_its_own_directory,
         case_live_window,
         case_structural_guard,
         case_exempt,

@@ -28,7 +28,7 @@ redacto_sink_paths() {
   printf '%s\n' "${paths[@]}"
 }
 
-# Globs for redacto --exclude. Matched against the full path, so each needs a leading */.
+# Globs for redacto --exclude, matched against the full path; arguments replace the default discovery roots.
 redacto_sink_excludes() {
   local globs=(
     '*/.git/*'
@@ -39,12 +39,15 @@ redacto_sink_excludes() {
     '*/__pycache__/*'
     '*/.ruff_cache/*'
   )
+  local roots=("$@")
+  [ ${#roots[@]} -gt 0 ] || roots=("$HOME/.claude/local" "$HOME/.claude/projects" "$HOME/.claude/image-cache" "/tmp/claude-$(id -u)")
   # A .redacto-exempt file or a git work tree below a root opts its subtree out — see README § Exempting a fixture directory.
   local root found
-  for root in "$HOME/.claude/local" "$HOME/.claude/projects" "$HOME/.claude/image-cache" "/tmp/claude-$(id -u)"; do
+  for root in "${roots[@]}"; do
     [ -d "$root" ] || continue
     while IFS= read -r found; do
-      [ -n "$found" ] && globs+=("$(dirname "$found")/*")
+      # One-character classes: a [ or * in a real directory name would otherwise change what the glob matches.
+      [ -n "$found" ] && globs+=("$(dirname "$found" | sed 's/[][*?{}]/[&]/g')/*")
     done < <(
       find "$root" -maxdepth 8 -name .redacto-exempt -type f 2>/dev/null
       find "$root" -mindepth 2 -maxdepth 8 -name .git -prune 2>/dev/null

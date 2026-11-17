@@ -85,6 +85,7 @@ fn report(scan_report: &ScanReport, write_mode: bool) -> bool {
     let mut possibly_live_skips = 0usize;
     let mut unsafe_line_files = 0usize;
     let mut pem_concern_files = 0usize;
+    let mut not_written_files = 0usize;
 
     for r in &scan_report.results {
         match &r.outcome {
@@ -95,7 +96,20 @@ fn report(scan_report: &ScanReport, write_mode: bool) -> bool {
             } => {
                 redacted_files += 1;
                 total_redactions += summary.total_redactions();
-                let mode = if *written { "written" } else { "dry-run" };
+                // A failed write in --write mode is not a dry run: the secret is still on disk, and the next run retries it.
+                let failed_write = write_mode && !*written && summary.total_redactions() > 0;
+                if failed_write {
+                    not_written_files += 1;
+                }
+                let mode = if *written {
+                    "written"
+                } else if failed_write {
+                    "NOT written: changed during the scan or not replaceable"
+                } else if write_mode {
+                    "nothing to write"
+                } else {
+                    "dry-run"
+                };
                 println!(
                     "{} [{}] {} redaction(s): {:?}",
                     r.path.display(),
@@ -151,12 +165,13 @@ fn report(scan_report: &ScanReport, write_mode: bool) -> bool {
     }
 
     println!(
-        "\nredacto: {redacted_files} file(s) with matches, {total_redactions} total redaction(s), {validation_failures} validation failure(s), {unsafe_line_files} file(s) with unsafe lines, {pem_concern_files} file(s) with unresolved PEM markers, write_mode={write_mode}"
+        "\nredacto: {redacted_files} file(s) with matches, {total_redactions} total redaction(s), {validation_failures} validation failure(s), {unsafe_line_files} file(s) with unsafe lines, {pem_concern_files} file(s) with unresolved PEM markers, {not_written_files} file(s) not written, write_mode={write_mode}"
     );
 
     validation_failures > 0
         || unsafe_line_files > 0
         || pem_concern_files > 0
+        || not_written_files > 0
         || !scan_report.root_errors.is_empty()
 }
 
@@ -188,6 +203,42 @@ mod tests {
         assert!(
             report(&scan_report, false),
             "a file with an unresolved PEM orphan and nothing else must still trip the exit-code trouble signal, so a CI/cron caller relying on the exit code actually sees it"
+        );
+    }
+
+    fn one_match(written: bool) -> ScanReport {
+        let summary = RedactSummary {
+            pattern_counts: [("openai-project-key".to_string(), 1)]
+                .into_iter()
+                .collect(),
+            ..Default::default()
+        };
+        ScanReport {
+            results: vec![redacto::engine::scan::ScanResult {
+                path: PathBuf::from("leak.log"),
+                outcome: FileOutcome::Redacted {
+                    summary,
+                    written,
+                    unsafe_lines: Vec::new(),
+                },
+            }],
+            root_errors: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn a_match_that_could_not_be_written_is_trouble_in_write_mode() {
+        assert!(
+            report(&one_match(false), true),
+            "the secret is still on disk, so a scheduler must see a non-zero exit"
+        );
+        assert!(
+            !report(&one_match(true), true),
+            "control: the same match, written, is a clean run"
+        );
+        assert!(
+            !report(&one_match(false), false),
+            "control: a dry run never writes, so an unwritten match is not trouble there"
         );
     }
 }
