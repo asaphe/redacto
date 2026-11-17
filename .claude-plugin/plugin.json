@@ -1,7 +1,7 @@
 {
   "name": "redacto",
   "description": "Redacts secrets from each Claude Code session's own logs (transcript, tool results, file history, scratchpad) after every turn and at session end, using the redacto CLI; a sweep of every log sink is opt-in. Requires redacto on PATH — see README for install.",
-  "version": "0.2.6",
+  "version": "0.3.0",
   "author": {
     "name": "asaphe"
   },

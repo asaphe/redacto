@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0
 
 - **Changed**: the plugin no longer sweeps every log sink at every session start.
   About 20 sessions starting together ran 13 full sweeps at once over an 18 GB
