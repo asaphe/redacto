@@ -530,14 +530,16 @@ def case_two_sweeps_never_run_their_engines_at_once(root):
     """The lock is only real if it is held while the engine rewrites files, not just around a check."""
     busy = os.path.join(root, "busy")
     control = os.path.join(root, "control")
-    sd_control = stage(control, stdout=CLEAN_SUMMARY, rc=0)
+    stage(control, stdout=CLEAN_SUMMARY, rc=0)
     stub = os.path.join(control, "stub-redacto")
-    env = dict(os.environ, STUB_SLEEP="2", STUB_BUSY=os.path.join(control, "busy"))
-    pair = [subprocess.Popen([stub], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) for _ in range(2)]
-    for p in pair:
-        p.wait()
-    check("control: two unlocked engines started together are seen overlapping",
-          os.path.exists(os.path.join(control, "busy.overlap")), sd_control)
+    env = dict(os.environ, STUB_SLEEP="3", STUB_BUSY=os.path.join(control, "busy"))
+    # The second starts only once the first is inside its busy window, so the control never depends on scheduling.
+    first = subprocess.Popen([stub], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    inside = wait_for(lambda: os.path.isdir(os.path.join(control, "busy")), 30)
+    second = subprocess.Popen([stub], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+    errs = [p.communicate()[1] for p in (first, second)]
+    check("control: an unlocked engine started while another is busy is seen overlapping",
+          inside and os.path.exists(os.path.join(control, "busy.overlap")), repr((inside, errs)))
 
     sd = stage(root, stdout=CLEAN_SUMMARY, rc=0)
     make_session(root, sid=OTHER)
