@@ -37,7 +37,13 @@ impl Watermark {
             std::fs::create_dir_all(parent)?;
         }
         let json = serde_json::to_string_pretty(self)?;
-        std::fs::write(state_path, json)?;
+        // Temp + rename: a run killed mid-write would otherwise leave torn JSON, which loads as empty and forces a full re-scan.
+        let tmp = state_path.with_extension(format!("json.tmp-{}", std::process::id()));
+        if let Err(e) = std::fs::write(&tmp, json).and_then(|()| std::fs::rename(&tmp, state_path))
+        {
+            let _ = std::fs::remove_file(&tmp);
+            return Err(e.into());
+        }
         Ok(())
     }
 

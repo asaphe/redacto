@@ -8,7 +8,7 @@
     {
       "name": "redacto",
       "source": "./",
-      "description": "Periodic SessionStart sweep that redacts secrets from your local Claude Code logs using the redacto CLI."
+      "description": "Redacts secrets from each Claude Code session's own logs using the redacto CLI; a sweep of every log sink is opt-in."
     }
   ]
 }

@@ -2,6 +2,44 @@
 
 ## Unreleased
 
+- **Changed**: the plugin no longer sweeps every log sink at every session start.
+  About 20 sessions starting together ran 13 full sweeps at once over an 18 GB
+  corpus. Each used up to 1 GB, some ran 53 minutes and outlived their
+  sessions, and the machine went down. Now each session sweeps only its own
+  files: its transcript, its tool results and subagent transcripts, its file
+  history, its scratchpad and its image cache. It does this from a background
+  `Stop` hook after each turn, plus a detached pass started by `SessionEnd`.
+  A sweep of every sink runs only on `redacto-log-sweep.sh --all`, by hand or
+  from a schedule you install; the README has a launchd example. A bare run
+  from cron now sweeps nothing, so add `--all` to such a job. See README § How
+  the plugin works.
+- **Added**: one kernel `flock` on `~/.local/state/redacto/sweep.lock` for
+  every sweep, so at most one runs at a time and none rewrites a file another
+  is rewriting. A crash or `SIGKILL` releases it. `--all` exits 75 while it is
+  held.
+- **Added**: `image-carrier-sweep.py --scoped`, where an empty path list sweeps
+  nothing instead of every transcript. A file target's directory is now also
+  searched for a killed rewrite's temp file.
+- **Fixed**: an exemption directory whose name holds `[`, `]`, `*`, `?`, `{`
+  or `}` was used as a raw glob. It could miss its own subtree or exclude
+  others. Those characters are now escaped.
+- **Fixed**: `redacto --write` checked a file for changes before writing its
+  replacement, not just before renaming it. An append that landed while a
+  large file was being written was lost. The file is now checked again
+  immediately before the rename.
+- **Fixed**: the stamp recorded after a rewrite was read from the path after
+  the rename, so an append in between could be marked as scanned. It is now
+  read from the replacement before it is published.
+- **Fixed**: the replacement file is created exclusively, never wider than the
+  original's mode, and fsynced along with its directory. The watermark is
+  saved by temp file and rename, so a killed run no longer leaves torn JSON
+  that forces a full re-scan.
+- **Fixed**: a file with matches that could not be rewritten in `--write` mode
+  was labelled `dry-run`, and the run still exited 0 with the secret on disk.
+  It is now labelled as not written and counted in a new `file(s) not
+  written` field of the summary line, and the run exits 1.
+- **Changed**: the image sweep names each temp file after its transcript, so a
+  run scoped to one transcript reaps only that file's leftovers.
 - **Added**: `redacto-filter`, a Claude Code `PostToolUse` hook that masks secrets
   in a tool result before the model and the transcript receive it. See README §
   Masking tool results before they are stored.

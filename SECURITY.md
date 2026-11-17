@@ -18,9 +18,10 @@ backports to a tagged release.
 
 ## What counts as a vulnerability here
 
-redacto runs unattended. The plugin's `SessionStart` hook invokes the binary with
-`--write` over local Claude Code log sinks, which are the files most likely to
-hold a pasted secret. Judge a report against that, not against a library's threat
+redacto runs unattended. The plugin's `Stop` and `SessionEnd` hooks invoke the
+binary with `--write` over a session's own Claude Code log files, and a full sweep
+covers every local log sink. These are the files most likely to hold a pasted
+secret. Judge a report against that, not against a library's threat
 model. In scope:
 
 - A pattern that fails to match a secret shape it claims to cover, or a code path

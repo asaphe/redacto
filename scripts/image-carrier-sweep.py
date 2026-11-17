@@ -178,7 +178,8 @@ def sweep_transcript(path, cutoff, live_cutoff, dry_run):
 
     lines_out, stripped, tmp = 0, 0, None
     try:
-        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=TEMP_PREFIX)
+        # Named after its transcript, so a run scoped to that file can reap its own leftovers and no one else's.
+        fd, tmp = tempfile.mkstemp(dir=os.path.dirname(path), prefix=owned_prefix(path))
         os.fchmod(fd, stat.S_IMODE(st.st_mode))
         with os.fdopen(fd, "w", encoding="utf-8", newline="") as out:
             with open(path, "r", encoding="utf-8", newline="") as fh:
@@ -272,7 +273,11 @@ def sweep_image_dir(root, cutoff, live_cutoff, dry_run, globs):
     return deleted, freed
 
 
-def sweep_orphans(dirpath, now, globs):
+def owned_prefix(path):
+    return "%s%s." % (TEMP_PREFIX, os.path.basename(path))
+
+
+def sweep_orphans(dirpath, now, globs, prefix=TEMP_PREFIX):
     """Reap temp files a killed run left behind — each holds a partial copy of a transcript."""
     reaped = 0
     try:
@@ -280,7 +285,7 @@ def sweep_orphans(dirpath, now, globs):
     except OSError:
         return reaped
     for name in names:
-        if not name.startswith(TEMP_PREFIX):
+        if not name.startswith(prefix):
             continue
         path = os.path.join(dirpath, name)
         if excluded(path, globs):
@@ -298,6 +303,9 @@ def transcript_files(targets, globs, reap=None):
     for target in targets:
         target = os.path.abspath(os.path.expanduser(target))
         if os.path.isfile(target) and not os.path.islink(target):
+            # A file target's directory is never walked, and it is shared, so only this file's own killed rewrite is reaped there.
+            if reap is not None:
+                reap[0] += sweep_orphans(os.path.dirname(target), reap[1], globs, owned_prefix(target))
             if not excluded(target, globs):
                 yield target
         elif os.path.isdir(target):
@@ -351,13 +359,15 @@ def main():
     ap.add_argument("--state-file", default=DEFAULT_STATE)
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--verbose", action="store_true")
+    # A session-scoped caller can legitimately pass no transcript; without this, that empty list means every transcript.
+    ap.add_argument("--scoped", action="store_true", help="sweep only the paths given; an empty list means none")
     args = ap.parse_args()
     for name, value in (("--max-age-hours", args.max_age_hours), ("--live-window-secs", args.live_window_secs)):
         if not math.isfinite(value) or value < 0:
             ap.error("%s must be a finite value >= 0" % name)
 
-    transcripts = args.transcript or DEFAULT_TRANSCRIPTS
-    image_dirs = args.image_dir or DEFAULT_IMAGE_DIRS
+    transcripts = args.transcript if args.scoped else (args.transcript or DEFAULT_TRANSCRIPTS)
+    image_dirs = args.image_dir if args.scoped else (args.image_dir or DEFAULT_IMAGE_DIRS)
     globs = [normalise_glob(g) for g in args.exclude]
     now = time.time()
     cutoff = now - args.max_age_hours * 3600.0

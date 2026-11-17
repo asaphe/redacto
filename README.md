@@ -208,8 +208,10 @@ in-place rewriting, incremental scanning, and safe multi-line handling.
 
 ## Claude Code plugin
 
-This repo doubles as a Claude Code plugin (`.claude-plugin/`) that sweeps the
-local Claude Code log sinks on `SessionStart`.
+This repo doubles as a Claude Code plugin (`.claude-plugin/`). Each session
+sweeps its own log files from its `Stop` and `SessionEnd` hooks. A sweep of
+every sink runs only when you start one yourself, by hand or on a schedule you
+install.
 
 Install:
 
@@ -229,14 +231,13 @@ cargo install --git https://github.com/asaphe/redacto --locked
 `cargo install` ignores a packaged `Cargo.lock` by default and every dependency
 is specified at major-version granularity, so without it every dependency
 re-resolves from crates.io at install time, build scripts included — for a
-binary a `SessionStart` hook then runs unattended over the files most likely to hold a pasted secret.
+binary a hook then runs unattended over the files most likely to hold a pasted secret.
 The whole hook, image sweep included, is a no-op if `redacto` isn't found:
 installing the plugin on its own must never start deleting anything.
 
-For a tighter sweep interval than "once per session start," pair this with
-your own cron/launchd invocation of `scripts/redacto-log-sweep.sh` (see
-[Built-in patterns](#built-in-patterns-v01) above on why this isn't a
-built-in daemon mode).
+The hooks also need a working `python3` (3.9+, standard library only): it
+parses the hook payload, takes the sweep lock and runs the image sweep. Without
+one, a session's hook reports that nothing was swept.
 
 ### Masking tool results before they are stored
 
@@ -288,9 +289,128 @@ so re-check it after upgrading. The rest of what it does not do:
 
 ### How the plugin works
 
-`scripts/redacto-sinks.sh` is the single source of truth for what gets swept,
-and it declares four lists rather than one, because a sink's carrier decides
-its policy:
+The plugin sweeps in the session that wrote the files, and only that
+session's files. A sweep of every sink is opt-in.
+
+**A session's own sweep.** `hooks/hooks.json` wires `scripts/redacto-log-sweep.sh`
+to two events, and `scripts/redacto-session.py` turns the hook payload into the
+session's paths:
+
+| Path | Text redaction | Image sweep |
+|---|---|---|
+| `~/.claude/projects/<project>/<session-id>.jsonl` (the transcript) | yes | yes |
+| `~/.claude/projects/<project>/<session-id>/` (tool results, subagent transcripts) | yes | yes |
+| `~/.claude/file-history/<session-id>/` | yes | — |
+| `/tmp/claude-<uid>/<project>/<session-id>/` (the scratchpad) | yes | yes |
+| `~/.claude/image-cache/<session-id>/` | — | delete only |
+
+- **`Stop`**, after every turn, in the background. It waits 30 seconds
+  (`REDACTO_SETTLE_SECS`) and then sweeps whatever has been quiet for that
+  long. If the next prompt arrives first, the transcript counts as live and
+  the next `Stop` sweeps it. Only the newest `Stop` run for a session does
+  the work; an older one that is still waiting stands down.
+- **`SessionEnd`**. Claude Code gives these hooks 1.5 seconds, a plugin
+  cannot raise that, and it discards their output. So the hook only starts a
+  detached final pass and returns. That pass waits 5 seconds and then sweeps
+  everything the session left.
+
+The hook payload is checked before it names a path. The session id must be a
+plain identifier, and the transcript must sit directly under a project
+directory in `~/.claude/projects`. A session directory that is a symlink is
+skipped. `/tmp/claude-<uid>` and each directory below it must belong to you.
+A bad payload sweeps nothing and is reported. It never widens the scope.
+
+Each session keeps its own watermark and image-sweep state under
+`${XDG_STATE_HOME:-~/.local/state}/redacto/sessions/<session-id>/`, and never
+touches the global one. Any session run deletes those directories once they
+have been idle for 7 days.
+
+**One sweep at a time.** Every sweep takes one kernel `flock` on
+`~/.local/state/redacto/sweep.lock`: session runs, full sweeps, and any
+schedule that uses the same file. So at most one sweep runs on the machine,
+and two writers never rewrite the same file at once. The lock lives as long as
+the sweep's processes do, and a crash or `SIGKILL` releases it, so a dead run
+leaves nothing behind to clean up. The file's text names the current holder
+and is for diagnostics only. The path ignores `XDG_STATE_HOME` on purpose:
+launchd and a login shell can disagree on it, and two lock paths would be no
+lock.
+
+- A `Stop` run waits up to 120 seconds (`REDACTO_LOCK_WAIT_SECS`) and then
+  stands down silently; the next `Stop`, or the final pass, covers it.
+- The final pass waits up to 15 minutes, then logs that it could not sweep.
+- `--all` waits up to 60 seconds, then exits 75, naming the holder.
+
+Each sweep runs at the lowest CPU priority (`renice 19`). On macOS it also
+runs at background QoS (`taskpolicy -b`), which throttles disk I/O too.
+
+**Where results go.** A `Stop` run's report reaches Claude as a
+`systemMessage` on the next turn. Claude Code does not show an async hook's
+output to you directly. The final pass appends anything that is not clean to
+`${XDG_STATE_HOME:-~/.local/state}/redacto/sweep.log`, rotated once at 1 MB,
+because nothing reads `SessionEnd` output. A clean run stays silent everywhere.
+
+**What a session's sweep does not cover:**
+
+- Sinks that belong to no one session: `history.jsonl`, `paste-cache/`,
+  `backups/`, `~/.claude/local/` and RTK's `tee/` mirror. Only a full sweep
+  reaches them.
+- The last writes of a session that crashes, since a crash skips
+  `SessionEnd`. That is normally the final 30 seconds, but it can be more if
+  the session never paused for 30 seconds. A resumed session's next `Stop`,
+  or a full sweep, catches it.
+- Inline images newer than 24 hours, the image sweep's age window. A session
+  shorter than a day keeps its screenshots inline until a full sweep runs
+  after that window. Claude Code itself deletes other sessions'
+  `image-cache/<session-id>/` directories at startup.
+- A `Stop` run's image stage skips a transcript that its text stage just
+  rewrote, because the file now counts as freshly written. The next `Stop`
+  picks it up. The final pass has no next run, so after a text rewrite it
+  waits out its 5-second window before running the image stage.
+
+**A full sweep.** `scripts/redacto-log-sweep.sh --all` sweeps every sink listed
+below with the global watermark. Nothing runs it by default. It prints a plain
+report and exits:
+
+- 0 when the sweep is clean or every finding was redacted;
+- 1 when anything was not fully swept (a failed control, an unreadable root,
+  a file it could not rewrite, a crash, or an image-sweep error);
+- 75 when another sweep holds the lock;
+- 64 on a usage error.
+
+Before this version, the README suggested running the script bare from
+cron or launchd. Add `--all` to such a job: a bare run now expects a hook
+payload on stdin and sweeps nothing without one.
+
+To schedule it on macOS, save this as `~/Library/LaunchAgents/local.redacto-sweep.plist`,
+with your own paths, and `launchctl load` it:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>local.redacto-sweep</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>/path/to/redacto/scripts/redacto-log-sweep.sh</string>
+    <string>--all</string>
+  </array>
+  <key>StartInterval</key><integer>3600</integer>
+  <key>LowPriorityIO</key><true/>
+  <key>Nice</key><integer>19</integer>
+  <key>StandardOutPath</key><string>/Users/you/.local/state/redacto/full-sweep.log</string>
+  <key>StandardErrorPath</key><string>/Users/you/.local/state/redacto/full-sweep.log</string>
+</dict>
+</plist>
+```
+
+On Linux, a cron line such as `0 * * * * /path/to/redacto/scripts/redacto-log-sweep.sh --all`
+does the same.
+
+`scripts/redacto-sinks.sh` is the single source of truth for what a full sweep
+covers, and it declares four lists rather than one, because a sink's carrier
+decides its policy:
 
 | List | Paths | Policy |
 |---|---|---|
@@ -304,9 +424,10 @@ stale count reads as a coverage claim. Note the third list is narrower than the
 first: `history.jsonl` is a `.jsonl` file but is not image-swept, because images
 are inlined into session transcripts and nothing else.
 
-The `SessionStart` hook runs the sweep in the background (`"async": true` in
-`hooks/hooks.json`), so a new session never waits on it; the hook's 120-second
-timeout still bounds the run.
+A full sweep passes the same `--exclude` globs to both stages. A session's sweep
+searches its own directories for markers and work trees, and checks the
+directories above each of its paths up to the sink root, so an exemption set
+higher up still holds (see [Exempting a fixture directory](#exempting-a-fixture-directory)).
 
 ### The image carrier
 
@@ -403,7 +524,9 @@ Markers and work trees are searched up to 8 levels below each of
 session scratchpad — every root either stage walks. The scratchpad's own
 project and session directories already take three of those levels.
 `image-carrier-sweep.py` also takes `--exclude GLOB` directly (repeatable,
-full-path match) when run standalone.
+full-path match) when run standalone. A `[`, `]`, `*`, `?`, `{` or `}` in a
+discovered directory's name is escaped, so the exclusion matches that directory
+and nothing else.
 
 ## License
 

@@ -1,14 +1,22 @@
 {
   "hooks": {
-    "SessionStart": [
+    "Stop": [
       {
-        "matcher": "",
         "hooks": [
           {
             "type": "command",
             "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/redacto-log-sweep.sh",
-            "async": true,
-            "timeout": 120
+            "async": true
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "\"${CLAUDE_PLUGIN_ROOT}\"/scripts/redacto-log-sweep.sh"
           }
         ]
       }
